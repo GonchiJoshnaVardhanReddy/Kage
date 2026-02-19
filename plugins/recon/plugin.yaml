@@ -1,0 +1,94 @@
+name: recon
+version: "1.0.0"
+description: Basic reconnaissance capabilities for target enumeration
+author: Kage Team
+category: reconnaissance
+
+entry_point: recon.py
+plugin_class: ReconPlugin
+
+required_tools:
+  - nmap
+  - dig
+  - whois
+
+permissions:
+  - execute_commands
+  - network_access
+
+capabilities:
+  - name: port_scan
+    description: Perform a port scan on a target IP or hostname
+    parameters:
+      - name: target
+        description: Target IP address or hostname
+        type: string
+        required: true
+      - name: ports
+        description: Port range to scan (e.g., "1-1000", "22,80,443")
+        type: string
+        required: false
+        default: "1-1000"
+      - name: scan_type
+        description: Scan type (quick, full, stealth)
+        type: string
+        required: false
+        default: quick
+    returns: string
+    dangerous: false
+    requires_approval: true
+    category: reconnaissance
+
+  - name: dns_lookup
+    description: Perform DNS lookup on a domain
+    parameters:
+      - name: domain
+        description: Domain name to lookup
+        type: string
+        required: true
+      - name: record_type
+        description: DNS record type (A, AAAA, MX, NS, TXT, CNAME, SOA)
+        type: string
+        required: false
+        default: A
+    returns: string
+    dangerous: false
+    requires_approval: false
+    category: reconnaissance
+
+  - name: whois_lookup
+    description: Perform WHOIS lookup on a domain or IP
+    parameters:
+      - name: target
+        description: Domain or IP address
+        type: string
+        required: true
+    returns: string
+    dangerous: false
+    requires_approval: false
+    category: reconnaissance
+
+  - name: subdomain_enum
+    description: Enumerate subdomains for a domain using DNS
+    parameters:
+      - name: domain
+        description: Domain to enumerate
+        type: string
+        required: true
+      - name: wordlist
+        description: "Subdomain wordlist (built-in options: small, medium, large)"
+        type: string
+        required: false
+        default: small
+    returns: string
+    dangerous: false
+    requires_approval: true
+    category: reconnaissance
+
+allowed_imports:
+  - re
+  - json
+  - ipaddress
+
+network_access: true
+file_access: false

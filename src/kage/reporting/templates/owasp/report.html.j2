@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penetration Test Report - {{ session_name }}</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --border-color: #30363d;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-orange: #d29922;
+            --accent-blue: #58a6ff;
+            --severity-critical: #dc3545;
+            --severity-high: #fd7e14;
+            --severity-medium: #ffc107;
+            --severity-low: #17a2b8;
+            --severity-info: #6c757d;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            padding: 2rem;
+            background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-color);
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        header .meta {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        h2 {
+            color: var(--accent-blue);
+            margin: 2rem 0 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        h3 {
+            color: var(--text-primary);
+            margin: 1.5rem 0 0.75rem;
+        }
+
+        h4 {
+            color: var(--text-secondary);
+            margin: 1rem 0 0.5rem;
+            font-size: 0.95rem;
+        }
+
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+
+        .stat-card {
+            background-color: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-card .number {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+
+        .stat-card .label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .stat-card.critical .number { color: var(--severity-critical); }
+        .stat-card.high .number { color: var(--severity-high); }
+        .stat-card.medium .number { color: var(--severity-medium); }
+        .stat-card.low .number { color: var(--severity-low); }
+        .stat-card.info .number { color: var(--severity-info); }
+
+        .risk-badge {
+            display: inline-block;
+            padding: 0.5rem 1.5rem;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+        }
+
+        .risk-CRITICAL { background-color: var(--severity-critical); color: white; }
+        .risk-HIGH { background-color: var(--severity-high); color: white; }
+        .risk-MEDIUM { background-color: var(--severity-medium); color: black; }
+        .risk-LOW { background-color: var(--severity-low); color: white; }
+        .risk-INFORMATIONAL { background-color: var(--severity-info); color: white; }
+
+        .severity-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: white;
+        }
+
+        .severity-critical { background-color: var(--severity-critical); }
+        .severity-high { background-color: var(--severity-high); }
+        .severity-medium { background-color: var(--severity-medium); color: black; }
+        .severity-low { background-color: var(--severity-low); }
+        .severity-info { background-color: var(--severity-info); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background-color: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+        }
+
+        tr:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        code {
+            font-family: 'Fira Code', 'Consolas', monospace;
+            background-color: var(--bg-tertiary);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: var(--accent-green);
+        }
+
+        pre {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+            color: var(--text-primary);
+        }
+
+        .finding {
+            border-left: 4px solid var(--border-color);
+            margin-bottom: 2rem;
+        }
+
+        .finding.severity-critical { border-left-color: var(--severity-critical); }
+        .finding.severity-high { border-left-color: var(--severity-high); }
+        .finding.severity-medium { border-left-color: var(--severity-medium); }
+        .finding.severity-low { border-left-color: var(--severity-low); }
+        .finding.severity-info { border-left-color: var(--severity-info); }
+
+        .finding-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .finding-title {
+            font-size: 1.2rem;
+            color: var(--text-primary);
+        }
+
+        .finding-meta {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin: 0.5rem 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .status-verified {
+            color: var(--accent-green);
+        }
+
+        .status-unverified {
+            color: var(--text-muted);
+        }
+
+        .section-evidence {
+            background-color: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+
+        footer {
+            text-align: center;
+            padding: 2rem;
+            margin-top: 3rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-muted);
+        }
+
+        footer .kage-brand {
+            font-weight: bold;
+            color: var(--accent-green);
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.8rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media print {
+            body {
+                background-color: white;
+                color: black;
+            }
+
+            .card, pre {
+                break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔒 Penetration Test Report</h1>
+            <p class="meta">
+                <strong>{{ session_name }}</strong><br>
+                Generated: {{ generated_at | format_datetime }}<br>
+                Report ID: {{ session_id[:8] }}
+            </p>
+        </header>
+
+        <!-- Executive Summary -->
+        <section>
+            <h2>📊 Executive Summary</h2>
+            <div class="card">
+                <p>This penetration testing report documents the findings from the security assessment conducted on the defined scope. The assessment was performed using Kage, an AI-powered penetration testing assistant.</p>
+                
+                <h3 style="text-align: center; margin: 1.5rem 0;">
+                    Overall Risk Rating: 
+                    <span class="risk-badge risk-{{ stats.risk_rating }}">{{ stats.risk_rating }}</span>
+                </h3>
+
+                <div class="stats-grid">
+                    <div class="stat-card critical">
+                        <div class="number">{{ stats.by_severity.critical }}</div>
+                        <div class="label">Critical</div>
+                    </div>
+                    <div class="stat-card high">
+                        <div class="number">{{ stats.by_severity.high }}</div>
+                        <div class="label">High</div>
+                    </div>
+                    <div class="stat-card medium">
+                        <div class="number">{{ stats.by_severity.medium }}</div>
+                        <div class="label">Medium</div>
+                    </div>
+                    <div class="stat-card low">
+                        <div class="number">{{ stats.by_severity.low }}</div>
+                        <div class="label">Low</div>
+                    </div>
+                    <div class="stat-card info">
+                        <div class="number">{{ stats.by_severity.info }}</div>
+                        <div class="label">Info</div>
+                    </div>
+                </div>
+
+                <table>
+                    <tr>
+                        <td>Total Findings</td>
+                        <td><strong>{{ stats.total }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Verified</td>
+                        <td>{{ stats.verified }}</td>
+                    </tr>
+                    <tr>
+                        <td>Commands Executed</td>
+                        <td>{{ command_count }}</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Scope -->
+        <section>
+            <h2>🎯 Scope</h2>
+            <div class="card">
+                <h3>Target Systems</h3>
+                {% if targets %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Target</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for target in targets %}
+                        <tr>
+                            <td>{{ target.target_type }}</td>
+                            <td><code>{{ target.value }}</code></td>
+                            <td>{{ target.notes or "-" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="color: var(--text-muted);">No targets defined.</p>
+                {% endif %}
+
+                {% if excluded %}
+                <h3>Excluded from Scope</h3>
+                <ul>
+                    {% for item in excluded %}
+                    <li><code>{{ item }}</code></li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Findings -->
+        <section>
+            <h2>🔍 Findings</h2>
+            
+            {% if findings %}
+            {% for finding in findings %}
+            <div class="card finding severity-{{ finding.severity.value }}">
+                <div class="finding-header">
+                    <h3 class="finding-title">
+                        {{ finding.severity.value | severity_emoji }} {{ finding.title }}
+                    </h3>
+                    <span class="severity-badge severity-{{ finding.severity.value }}">
+                        {{ finding.severity.value | upper }}
+                    </span>
+                </div>
+
+                <div class="finding-meta">
+                    {% if finding.cvss_score %}
+                    <span>CVSS: <strong>{{ finding.cvss_score }}</strong></span>
+                    {% endif %}
+                    {% if finding.cwe_id %}
+                    <span>CWE: <strong>{{ finding.cwe_id }}</strong></span>
+                    {% endif %}
+                    {% if finding.target %}
+                    <span>Target: <code>{{ finding.target }}</code></span>
+                    {% endif %}
+                    <span class="{{ 'status-verified' if finding.verified else 'status-unverified' }}">
+                        {{ "✓ Verified" if finding.verified else "○ Unverified" }}
+                    </span>
+                </div>
+
+                <h4>Description</h4>
+                <p>{{ finding.description }}</p>
+
+                {% if finding.impact %}
+                <h4>Impact</h4>
+                <p>{{ finding.impact }}</p>
+                {% endif %}
+
+                {% if finding.evidence %}
+                <h4>Evidence</h4>
+                <div class="section-evidence">
+                    {% for ev in finding.evidence %}
+                    <pre><code>{{ ev | truncate_output }}</code></pre>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% if finding.remediation %}
+                <h4>Remediation</h4>
+                <p>{{ finding.remediation }}</p>
+                {% endif %}
+
+                {% if finding.references %}
+                <h4>References</h4>
+                <ul>
+                    {% for ref in finding.references %}
+                    <li><a href="{{ ref }}" target="_blank" style="color: var(--accent-blue);">{{ ref }}</a></li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="card">
+                <p style="color: var(--text-muted); text-align: center;">
+                    No findings recorded in this session.
+                </p>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- Commands -->
+        <section>
+            <h2>⚡ Testing Activity</h2>
+            <div class="card">
+                {% if commands %}
+                <p>{{ command_count }} command(s) were executed during this assessment.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Command</th>
+                            <th>Status</th>
+                            <th>Exit Code</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for cmd in commands %}
+                        <tr>
+                            <td>{{ loop.index }}</td>
+                            <td><code>{{ cmd.command[:60] }}{% if cmd.command|length > 60 %}...{% endif %}</code></td>
+                            <td>{{ cmd.status.value }}</td>
+                            <td>{{ cmd.exit_code if cmd.exit_code is not none else "-" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="color: var(--text-muted);">No commands were executed during this session.</p>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Assessment Details -->
+        <section>
+            <h2>📋 Assessment Details</h2>
+            <div class="card">
+                <table>
+                    <tr>
+                        <td>Session ID</td>
+                        <td><code>{{ session_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <td>Created</td>
+                        <td>{{ created_at | format_datetime }}</td>
+                    </tr>
+                    <tr>
+                        <td>Last Updated</td>
+                        <td>{{ updated_at | format_datetime }}</td>
+                    </tr>
+                    <tr>
+                        <td>Safe Mode</td>
+                        <td>{{ "Enabled ✓" if safe_mode else "Disabled" }}</td>
+                    </tr>
+                    <tr>
+                        <td>Environment</td>
+                        <td>{{ environment }}</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Disclaimer -->
+        <section>
+            <h2>⚠️ Disclaimer</h2>
+            <div class="card">
+                <p>This report is provided for authorized security testing purposes only. The findings documented herein should be treated as confidential and handled in accordance with applicable security policies. The information contained in this report should only be used to improve the security posture of the tested systems.</p>
+            </div>
+        </section>
+
+        <footer>
+            <p>Generated by <span class="kage-brand">Kage</span> - AI-Powered Penetration Testing Assistant</p>
+            <p style="margin-top: 0.5rem; font-size: 0.8rem;">{{ generated_at | format_datetime }}</p>
+        </footer>
+    </div>
+</body>
+</html>

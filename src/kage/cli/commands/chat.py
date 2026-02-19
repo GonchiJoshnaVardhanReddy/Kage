@@ -37,13 +37,49 @@ class ChatSession:
         self.provider = None
         self.conversation: ConversationManager | None = None
         self._pending_commands: list[Command] = []
+        self._session_storage = None
+        self._auto_save = None
+        self._resumed = False
 
-        # Initialize scope if provided
-        if scope:
+        # Try to resume existing session
+        if session_id:
+            asyncio.run(self._try_resume_session(session_id))
+
+        # Initialize scope if provided (only if not resumed)
+        if scope and not self._resumed:
             self._parse_and_add_scope(scope)
 
-        # Override safe mode from config
-        self.session.safe_mode = config.security.safe_mode
+        # Override safe mode from config (only if not resumed)
+        if not self._resumed:
+            self.session.safe_mode = config.security.safe_mode
+
+    async def _try_resume_session(self, session_id: str) -> bool:
+        """Try to resume an existing session."""
+        from kage.persistence import SessionStorage
+
+        self._session_storage = SessionStorage()
+        
+        # Try exact match first
+        loaded = await self._session_storage.load(session_id)
+        
+        # Try partial match if exact fails
+        if not loaded:
+            sessions = await self._session_storage.list_sessions()
+            for s in sessions:
+                if s["id"].startswith(session_id):
+                    loaded = await self._session_storage.load(s["id"])
+                    break
+        
+        if loaded:
+            self.session = loaded
+            self._resumed = True
+            self.console.print(f"[success]Resumed session: {self.session.id[:8]}[/success]")
+            self.console.print(f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]")
+            return True
+        
+        self.console.print(f"[warning]Session not found: {session_id}[/warning]")
+        self.console.print("[muted]Starting new session instead.[/muted]")
+        return False
 
     def _parse_and_add_scope(self, scope_str: str) -> None:
         """Parse scope string and add targets."""
@@ -145,6 +181,13 @@ class ChatSession:
         elif cmd == "commands":
             self._show_pending_commands()
 
+        elif cmd == "save":
+            self._save_session()
+
+        elif cmd == "export":
+            args = parts[1] if len(parts) > 1 else ""
+            self._export_session(args)
+
         else:
             self.console.print(f"[error]Unknown command: /{cmd}[/error]")
             self.console.print("[muted]Type /help for available commands.[/muted]")
@@ -166,6 +209,8 @@ class ChatSession:
 [command]/status[/command]      - Show session status
 [command]/commands[/command]    - Show pending commands
 [command]/run[/command]         - Execute pending commands
+[command]/save[/command]        - Save current session
+[command]/export [path][/command] - Export session to file
 
 [header]Tips[/header]
 
@@ -173,6 +218,7 @@ class ChatSession:
 • All commands require your approval before execution
 • Use safe mode to prevent dangerous operations
 • Define your scope to prevent accidental out-of-scope testing
+• Sessions auto-save periodically
 """
         self.console.print(help_text)
 
@@ -243,13 +289,66 @@ class ChatSession:
             if cmd.description:
                 self.console.print(f"      [muted]{cmd.description}[/muted]")
 
+    def _save_session(self) -> None:
+        """Save the current session."""
+        from kage.persistence import SessionStorage
+
+        if not self._session_storage:
+            self._session_storage = SessionStorage()
+
+        path = asyncio.run(self._session_storage.save(self.session))
+        self.console.print(f"[success]Session saved: {self.session.id[:8]}[/success]")
+        self.console.print(f"[muted]Path: {path}[/muted]")
+
+    def _export_session(self, args: str) -> None:
+        """Export the current session to a file."""
+        from pathlib import Path
+        from kage.persistence import SessionStorage
+
+        if not self._session_storage:
+            self._session_storage = SessionStorage()
+
+        # Determine output path and format
+        if args:
+            output_path = Path(args)
+        else:
+            output_path = Path(f"session_{self.session.id[:8]}.md")
+
+        fmt = "markdown" if output_path.suffix == ".md" else "json"
+
+        success = asyncio.run(
+            self._session_storage.export_session(self.session.id, output_path, fmt)
+        )
+
+        if success:
+            self.console.print(f"[success]Exported to: {output_path}[/success]")
+        else:
+            # Save first then export
+            asyncio.run(self._session_storage.save(self.session))
+            success = asyncio.run(
+                self._session_storage.export_session(self.session.id, output_path, fmt)
+            )
+            if success:
+                self.console.print(f"[success]Exported to: {output_path}[/success]")
+            else:
+                self.console.print("[error]Failed to export session[/error]")
+
     def _run_pending_commands(self) -> None:
-        """Execute pending commands with approval."""
+        """Execute pending commands with approval workflow."""
         if not self._pending_commands:
             self.console.print("[muted]No pending commands.[/muted]")
             return
 
         from rich.prompt import Confirm
+        from kage.security import ApprovalWorkflow, ApprovalDecision
+
+        # Create approval workflow
+        workflow = ApprovalWorkflow(
+            scope=self.session.scope,
+            safe_mode_enabled=self.session.safe_mode,
+            require_approval=self.config.security.require_approval,
+            scope_enforcement=self.config.security.scope_enforcement,
+        )
 
         for cmd in self._pending_commands[:]:
             self.console.print()
@@ -257,8 +356,34 @@ class ChatSession:
             if cmd.description:
                 self.console.print(f"[muted]{cmd.description}[/muted]")
 
-            if self.config.security.require_approval:
-                if not Confirm.ask("[warning]Execute?[/warning]", default=False):
+            # Run through approval workflow
+            result = asyncio.run(workflow.evaluate(cmd))
+
+            # Handle blocked commands
+            if result.decision == ApprovalDecision.BLOCKED:
+                self.console.print()
+                self.console.print(
+                    Panel(
+                        f"[danger]{result.reason}[/danger]",
+                        title="[unsafe]🛡 BLOCKED BY SAFE MODE[/unsafe]",
+                        border_style="danger",
+                    )
+                )
+                cmd.status = CommandStatus.REJECTED
+                self.session.commands.append(cmd)
+                self._pending_commands.remove(cmd)
+                continue
+
+            # Show warnings
+            if result.warnings:
+                self.console.print()
+                for warning in result.warnings:
+                    self.console.print(f"[warning]{warning}[/warning]")
+                self.console.print()
+
+            # Get user approval
+            if result.decision == ApprovalDecision.NEEDS_CONFIRMATION:
+                if not Confirm.ask("[warning]Execute anyway?[/warning]", default=False):
                     cmd.status = CommandStatus.REJECTED
                     self.session.commands.append(cmd)
                     self._pending_commands.remove(cmd)
@@ -271,27 +396,23 @@ class ChatSession:
             self._pending_commands.remove(cmd)
 
     async def _execute_command(self, cmd: Command) -> None:
-        """Execute a single command."""
-        import subprocess
+        """Execute a single command using the executor."""
+        from kage.executor import LocalExecutor
 
         cmd.status = CommandStatus.RUNNING
         cmd.started_at = datetime.utcnow()
 
         self.console.print("[status.running]Running...[/status.running]")
 
-        try:
-            result = subprocess.run(
-                cmd.command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=cmd.timeout,
-            )
+        executor = LocalExecutor()
 
-            cmd.exit_code = result.returncode
+        try:
+            result = await executor.execute(cmd.command, timeout=cmd.timeout)
+
+            cmd.exit_code = result.exit_code
             cmd.stdout = result.stdout
             cmd.stderr = result.stderr
-            cmd.status = CommandStatus.COMPLETED
+            cmd.status = CommandStatus.COMPLETED if not result.timed_out else CommandStatus.TIMEOUT
             cmd.completed_at = datetime.utcnow()
 
             # Display output
@@ -316,14 +437,12 @@ class ChatSession:
                     )
                 )
 
-            self.console.print(
-                f"[status.completed]Completed (exit: {result.returncode})[/status.completed]"
-            )
-
-        except subprocess.TimeoutExpired:
-            cmd.status = CommandStatus.TIMEOUT
-            cmd.completed_at = datetime.utcnow()
-            self.console.print("[error]Command timed out[/error]")
+            if result.timed_out:
+                self.console.print("[error]Command timed out[/error]")
+            else:
+                self.console.print(
+                    f"[status.completed]Completed (exit: {result.exit_code})[/status.completed]"
+                )
 
         except Exception as e:
             cmd.status = CommandStatus.FAILED
