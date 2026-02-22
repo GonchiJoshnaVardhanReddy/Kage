@@ -36,40 +36,40 @@ DANGEROUS_PATTERNS: list[tuple[str, DangerLevel, str, str | None]] = [
     (r"\bdd\s+if=.+\s+of=/dev/[sh]d", DangerLevel.BLOCKED, "Overwrites disk", None),
     (r">\s*/dev/[sh]d[a-z]", DangerLevel.BLOCKED, "Overwrites disk", None),
     (r":\(\)\s*{\s*:\s*\|\s*:\s*&\s*}\s*;", DangerLevel.BLOCKED, "Fork bomb", None),
-    
+
     # Permission disasters
     (r"\bchmod\s+(-R\s+)?777\s+/", DangerLevel.BLOCKED, "Insecure permissions on system dirs", None),
     (r"\bchown\s+(-R\s+)?.+\s+/$", DangerLevel.BLOCKED, "Changes ownership of root", None),
-    
+
     # Remote code execution risks
     (r"\bwget\s+.+\|\s*(ba)?sh", DangerLevel.BLOCKED, "Downloads and executes remote code", "Download first, inspect, then execute"),
     (r"\bcurl\s+.+\|\s*(ba)?sh", DangerLevel.BLOCKED, "Downloads and executes remote code", "Download first, inspect, then execute"),
-    
+
     # DoS patterns
     (r"\b(hping3?|slowloris)\b.*--flood", DangerLevel.DANGEROUS, "Denial of Service attack", "Use rate-limited scanning instead"),
     (r"\b(ab|siege|wrk)\s+.*-c\s*[5-9]\d{2,}", DangerLevel.DANGEROUS, "High-concurrency stress test", "Reduce concurrency"),
-    
+
     # Bruteforce without limits
     (r"\bhydra\b(?!.*-t\s*[1-4]\b)", DangerLevel.CAUTION, "Bruteforce without thread limit", "Add -t 4 to limit threads"),
     (r"\bmedusa\b(?!.*-t\s*[1-4]\b)", DangerLevel.CAUTION, "Bruteforce without thread limit", "Add -t 4 to limit threads"),
-    
+
     # Aggressive scanning
     (r"\bnmap\b.*-T\s*5", DangerLevel.CAUTION, "Insanely aggressive scan timing", "Use -T4 or lower"),
     (r"\bmasscan\b.*--rate\s*[1-9]\d{5,}", DangerLevel.DANGEROUS, "Extremely high scan rate", "Reduce rate to 10000 or lower"),
-    
+
     # Data exfiltration
     (r"\bnc\b.*-e\s*/bin/(ba)?sh", DangerLevel.DANGEROUS, "Reverse shell", None),
     (r"\bbash\s+-i\s+>&\s*/dev/tcp/", DangerLevel.DANGEROUS, "Reverse shell", None),
-    
+
     # Privilege escalation attempts on host
     (r"\bsudo\s+su\s*$", DangerLevel.CAUTION, "Privilege escalation", None),
     (r"\bsudo\s+-i\s*$", DangerLevel.CAUTION, "Privilege escalation", None),
-    
+
     # History/log tampering
     (r"\bhistory\s+-c", DangerLevel.CAUTION, "Clears command history", None),
     (r">\s*/var/log/", DangerLevel.DANGEROUS, "Clears system logs", None),
     (r"\brm\s+.*/var/log/", DangerLevel.DANGEROUS, "Removes system logs", None),
-    
+
     # Network disruption
     (r"\barpspoof\b", DangerLevel.DANGEROUS, "ARP spoofing attack", None),
     (r"\bettercap\b.*arp\.spoof", DangerLevel.DANGEROUS, "ARP spoofing attack", None),
@@ -108,14 +108,14 @@ class SafeModeFilter:
             (re.compile(pattern, re.IGNORECASE), level, reason, suggestion)
             for pattern, level, reason, suggestion in DANGEROUS_PATTERNS
         ]
-        
+
         self._compiled_blocked = [
-            re.compile(pattern, re.IGNORECASE) 
+            re.compile(pattern, re.IGNORECASE)
             for pattern in self.custom_blocked
         ]
-        
+
         self._compiled_allowed = [
-            re.compile(pattern, re.IGNORECASE) 
+            re.compile(pattern, re.IGNORECASE)
             for pattern in self.custom_allowed
         ]
 
@@ -190,7 +190,7 @@ class SafeModeFilter:
 def classify_command_category(command: str) -> str:
     """Classify a command into a category."""
     command_lower = command.lower()
-    
+
     categories = {
         "reconnaissance": ["nmap", "masscan", "ping", "traceroute", "dig", "nslookup", "whois"],
         "enumeration": ["gobuster", "dirb", "ffuf", "wfuzz", "nikto", "enum4linux"],
@@ -201,9 +201,9 @@ def classify_command_category(command: str) -> str:
         "post_exploitation": ["mimikatz", "bloodhound", "empire"],
         "utility": ["cat", "grep", "find", "ls", "pwd", "echo", "base64"],
     }
-    
+
     for category, tools in categories.items():
         if any(tool in command_lower for tool in tools):
             return category
-    
+
     return "other"

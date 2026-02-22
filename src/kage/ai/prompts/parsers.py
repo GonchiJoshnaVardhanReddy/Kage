@@ -123,9 +123,7 @@ def extract_commands_simple(text: str) -> list[str]:
             line = line.strip()
             if line and _looks_like_command(line):
                 # Remove common prefixes
-                if line.startswith("$ "):
-                    line = line[2:]
-                elif line.startswith("# "):
+                if line.startswith("$ ") or line.startswith("# "):
                     line = line[2:]
                 commands.append(line)
 

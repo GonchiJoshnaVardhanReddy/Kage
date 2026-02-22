@@ -53,7 +53,7 @@ class SessionStorage:
             return None
 
         try:
-            async with aiofiles.open(path, "r") as f:
+            async with aiofiles.open(path) as f:
                 data = json.loads(await f.read())
             return Session(**data)
         except Exception:
@@ -86,7 +86,7 @@ class SessionStorage:
             return []
 
         try:
-            async with aiofiles.open(index_path, "r") as f:
+            async with aiofiles.open(index_path) as f:
                 index = json.loads(await f.read())
 
             sessions = list(index.get("sessions", {}).values())
@@ -114,7 +114,7 @@ class SessionStorage:
         index = {"sessions": {}}
         if index_path.exists():
             try:
-                async with aiofiles.open(index_path, "r") as f:
+                async with aiofiles.open(index_path) as f:
                     index = json.loads(await f.read())
             except Exception:
                 pass
@@ -150,7 +150,7 @@ class SessionStorage:
             return
 
         try:
-            async with aiofiles.open(index_path, "r") as f:
+            async with aiofiles.open(index_path) as f:
                 index = json.loads(await f.read())
 
             if session_id in index.get("sessions", {}):

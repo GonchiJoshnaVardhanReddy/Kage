@@ -17,7 +17,7 @@ def get_templates_dir() -> Path:
     user_templates = Path.home() / ".config" / "kage" / "templates"
     if user_templates.exists():
         return user_templates
-    
+
     # Fall back to package templates
     package_root = Path(__file__).parent.parent.parent.parent
     return package_root / "templates"
@@ -31,33 +31,33 @@ def get_builtin_templates_dir() -> Path:
 def create_jinja_env(templates_dir: Path | None = None) -> Environment:
     """Create a Jinja2 environment with custom filters."""
     dirs = []
-    
+
     # Add custom templates dir if provided
     if templates_dir:
         dirs.append(str(templates_dir))
-    
+
     # Add user templates
     user_templates = Path.home() / ".config" / "kage" / "templates"
     if user_templates.exists():
         dirs.append(str(user_templates))
-    
+
     # Add package templates (root level)
     package_templates = get_templates_dir()
     if package_templates.exists():
         dirs.append(str(package_templates))
-    
+
     # Add built-in templates
     builtin = get_builtin_templates_dir()
     if builtin.exists():
         dirs.append(str(builtin))
-    
+
     env = Environment(
         loader=FileSystemLoader(dirs),
         autoescape=select_autoescape(["html", "xml"]),
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    
+
     # Add custom filters
     env.filters["severity_color"] = severity_color
     env.filters["severity_emoji"] = severity_emoji
@@ -65,7 +65,7 @@ def create_jinja_env(templates_dir: Path | None = None) -> Environment:
     env.filters["truncate_output"] = truncate_output
     env.filters["format_datetime"] = format_datetime
     env.filters["escape_markdown"] = escape_markdown
-    
+
     return env
 
 
@@ -73,7 +73,7 @@ def severity_color(severity: Severity | str) -> str:
     """Get CSS color for severity level."""
     if isinstance(severity, Severity):
         severity = severity.value
-    
+
     colors = {
         "critical": "#dc3545",
         "high": "#fd7e14",
@@ -88,7 +88,7 @@ def severity_emoji(severity: Severity | str) -> str:
     """Get emoji for severity level."""
     if isinstance(severity, Severity):
         severity = severity.value
-    
+
     emojis = {
         "critical": "🔴",
         "high": "🟠",
@@ -103,7 +103,7 @@ def severity_badge(severity: Severity | str) -> str:
     """Get HTML badge for severity level."""
     if isinstance(severity, Severity):
         severity = severity.value
-    
+
     color = severity_color(severity)
     return f'<span class="severity-badge severity-{severity}" style="background-color: {color};">{severity.upper()}</span>'
 

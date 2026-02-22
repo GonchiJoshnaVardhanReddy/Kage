@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING
 
 from kage.ai.base import BaseLLMProvider, LLMConfig, LLMMessage
 from kage.ai.prompts import build_context_message, build_system_prompt, parse_response
-from kage.ai.streaming import StreamHandler, StreamState
+from kage.ai.streaming import StreamHandler
 from kage.core.models import Command, Finding, Message, MessageRole, Session
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ class ConversationManager:
     def __init__(
         self,
         provider: BaseLLMProvider,
-        config: "KageConfig",
+        config: KageConfig,
         session: Session,
     ) -> None:
         self.provider = provider

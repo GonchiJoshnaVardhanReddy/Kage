@@ -31,18 +31,18 @@ class PluginSchema(BaseModel):
     category: str = "general"
     entry_point: str = "plugin.py"  # Python file containing the plugin class
     plugin_class: str = "Plugin"  # Class name to instantiate
-    
+
     required_tools: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
     capabilities: list[CapabilitySchema] = Field(default_factory=list)
-    
+
     # Sandbox settings
     allowed_imports: list[str] = Field(default_factory=list)
     network_access: bool = False
     file_access: bool = False
 
     @classmethod
-    def from_yaml(cls, path: Path) -> "PluginSchema":
+    def from_yaml(cls, path: Path) -> PluginSchema:
         """Load plugin schema from YAML file."""
         with open(path) as f:
             data = yaml.safe_load(f)
@@ -70,7 +70,7 @@ DEFAULT_ALLOWED_IMPORTS = [
     "enum",
     "ipaddress",
     "urllib.parse",
-    
+
     # Kage modules
     "kage.plugins.base",
     "kage.core.models",

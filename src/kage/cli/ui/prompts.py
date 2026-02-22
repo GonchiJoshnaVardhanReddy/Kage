@@ -17,26 +17,26 @@ def prompt_user_input(console: Console) -> str:
 def prompt_command_approval(console: Console, command: Command) -> bool:
     """Prompt user to approve or reject a command."""
     console.print()
-    
+
     # Show command details
     cmd_text = Text()
     cmd_text.append("Command: ", style="subtitle")
     cmd_text.append(command.command, style="command")
     console.print(cmd_text)
-    
+
     if command.description:
         desc_text = Text()
         desc_text.append("Purpose: ", style="subtitle")
         desc_text.append(command.description, style="muted")
         console.print(desc_text)
-    
+
     env_text = Text()
     env_text.append("Environment: ", style="subtitle")
     env_text.append(command.environment.value, style="info")
     console.print(env_text)
-    
+
     console.print()
-    
+
     return Confirm.ask(
         "[warning]Execute this command?[/warning]",
         default=False,
@@ -47,7 +47,7 @@ def prompt_command_approval(console: Console, command: Command) -> bool:
 def prompt_scope_warning(console: Console, target: str, command: str) -> bool:
     """Warn about potential out-of-scope action."""
     console.print()
-    
+
     warning_panel = Panel(
         Text.from_markup(
             f"[warning]Potential out-of-scope target detected![/warning]\n\n"
@@ -59,7 +59,7 @@ def prompt_scope_warning(console: Console, target: str, command: str) -> bool:
         border_style="danger",
     )
     console.print(warning_panel)
-    
+
     return Confirm.ask(
         "[danger]Proceed anyway?[/danger]",
         default=False,
@@ -70,7 +70,7 @@ def prompt_scope_warning(console: Console, target: str, command: str) -> bool:
 def prompt_safe_mode_warning(console: Console, command: str, reason: str) -> bool:
     """Warn about dangerous command in safe mode."""
     console.print()
-    
+
     warning_panel = Panel(
         Text.from_markup(
             f"[danger]Dangerous command blocked by Safe Mode![/danger]\n\n"
@@ -82,7 +82,7 @@ def prompt_safe_mode_warning(console: Console, command: str, reason: str) -> boo
         border_style="danger",
     )
     console.print(warning_panel)
-    
+
     return Confirm.ask(
         "[danger]Override Safe Mode and execute?[/danger]",
         default=False,

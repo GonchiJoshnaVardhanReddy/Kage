@@ -1,5 +1,7 @@
 """Reporting module for Kage."""
 
+from kage.reporting.engine import ReportEngine
+from kage.reporting.export import ReportExporter, get_default_filename
 from kage.reporting.findings import (
     FindingStats,
     ReportData,
@@ -7,8 +9,6 @@ from kage.reporting.findings import (
     group_findings_by_target,
     sort_findings_by_severity,
 )
-from kage.reporting.engine import ReportEngine
-from kage.reporting.export import ReportExporter, get_default_filename
 
 __all__ = [
     "FindingStats",

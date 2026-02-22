@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import AsyncIterator
 
 from kage.executor.base import BaseExecutor, ExecutionResult, StreamingOutput
 
@@ -43,7 +43,7 @@ class LocalExecutor(BaseExecutor):
         """Execute a command locally."""
         started_at = datetime.utcnow()
         cwd = working_dir or self.working_dir
-        
+
         # Merge environment variables
         run_env = os.environ.copy()
         if env:
@@ -102,7 +102,7 @@ class LocalExecutor(BaseExecutor):
     ) -> AsyncIterator[StreamingOutput]:
         """Execute a command and stream output."""
         cwd = working_dir or self.working_dir
-        
+
         # Merge environment variables
         run_env = os.environ.copy()
         if env:
@@ -131,15 +131,7 @@ class LocalExecutor(BaseExecutor):
         # Read both streams concurrently
         try:
             async with asyncio.timeout(timeout):
-                # Create tasks for both streams
-                stdout_task = asyncio.create_task(
-                    self._collect_stream(process.stdout, "stdout")
-                )
-                stderr_task = asyncio.create_task(
-                    self._collect_stream(process.stderr, "stderr")
-                )
-
-                # Yield from both as they come in
+                # Yield from both streams as they come in
                 for stream in [process.stdout, process.stderr]:
                     if stream:
                         stream_name = "stdout" if stream == process.stdout else "stderr"
@@ -175,8 +167,8 @@ class WindowsExecutor(LocalExecutor):
     """Windows-specific executor with PowerShell support."""
 
     def __init__(
-        self, 
-        working_dir: str | None = None, 
+        self,
+        working_dir: str | None = None,
         use_powershell: bool = True,
     ) -> None:
         super().__init__(working_dir)
@@ -202,5 +194,5 @@ class WindowsExecutor(LocalExecutor):
         if self.use_powershell:
             # Wrap command for PowerShell
             command = f'powershell.exe -NoProfile -Command "{command}"'
-        
+
         return await super().execute(command, timeout, working_dir, env)

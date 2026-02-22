@@ -1,12 +1,43 @@
-.PHONY: install dev test lint format clean
+.PHONY: install dev test lint format clean setup uninstall
 
-# Install for production
+# Full installation (creates venv, installs, adds to PATH)
+setup:
+ifeq ($(OS),Windows_NT)
+	powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+else
+	bash scripts/install.sh
+endif
+
+# Full installation with dev dependencies
+setup-dev:
+ifeq ($(OS),Windows_NT)
+	powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Dev
+else
+	bash scripts/install.sh --dev
+endif
+
+# Quick install (no venv, assumes pip available)
 install:
 	pip install -e .
 
 # Install with dev dependencies
 dev:
 	pip install -e ".[dev]"
+
+# Uninstall kage
+uninstall:
+ifeq ($(OS),Windows_NT)
+	@echo Removing Kage...
+	@if exist "$(LOCALAPPDATA)\Kage" rmdir /s /q "$(LOCALAPPDATA)\Kage"
+	@pip uninstall -y kage 2>nul || echo Kage pip package not found
+	@echo Kage uninstalled. Remove PATH entry manually if needed.
+else
+	@echo "Removing Kage..."
+	@rm -rf ~/.local/share/kage
+	@rm -f ~/.local/bin/kage
+	@pip uninstall -y kage 2>/dev/null || echo "Kage pip package not found"
+	@echo "Kage uninstalled. Remove PATH entry from shell rc file if needed."
+endif
 
 # Run tests
 test:

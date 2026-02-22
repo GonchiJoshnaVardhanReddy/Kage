@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from types import ModuleType
 from typing import Any
 

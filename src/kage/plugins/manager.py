@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kage.plugins.base import BasePlugin, Capability, PluginContext
-from kage.plugins.sandbox import PluginSandbox, validate_plugin_code, SandboxViolation
+from kage.plugins.sandbox import PluginSandbox, SandboxViolation, validate_plugin_code
 from kage.plugins.schema import PluginSchema
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ class PluginManager:
             is_safe, issues = validate_plugin_code(code)
             if not is_safe:
                 raise PluginLoadError(
-                    f"Plugin code validation failed:\n" + "\n".join(issues)
+                    "Plugin code validation failed:\n" + "\n".join(issues)
                 )
 
         # Load the plugin module
@@ -121,7 +121,7 @@ class PluginManager:
 
         if not issubclass(plugin_class, BasePlugin):
             raise PluginLoadError(
-                f"Plugin class must inherit from BasePlugin"
+                "Plugin class must inherit from BasePlugin"
             )
 
         # Instantiate plugin
@@ -200,7 +200,7 @@ class PluginManager:
         """Get OpenAI-compatible tool schemas for all capabilities."""
         return [cap.to_tool_schema() for cap in self.get_all_capabilities()]
 
-    def set_context(self, session: "Session", log_fn: callable | None = None) -> None:
+    def set_context(self, session: Session, log_fn: callable | None = None) -> None:
         """Set context for all plugins."""
         context = PluginContext(session, log_fn)
         for plugin in self._plugins.values():

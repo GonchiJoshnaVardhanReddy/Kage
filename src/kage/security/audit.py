@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +32,7 @@ class AuditLogger:
 
         if self.log_file.exists():
             # Load last hash from existing file
-            async with aiofiles.open(self.log_file, "r") as f:
+            async with aiofiles.open(self.log_file) as f:
                 last_line = None
                 async for line in f:
                     if line.strip():
@@ -204,7 +201,7 @@ class AuditLogger:
         previous_hash = None
         line_number = 0
 
-        async with aiofiles.open(self.log_file, "r") as f:
+        async with aiofiles.open(self.log_file) as f:
             async for line in f:
                 line_number += 1
                 if not line.strip():
@@ -247,7 +244,7 @@ class AuditLogger:
             return []
 
         entries = []
-        async with aiofiles.open(self.log_file, "r") as f:
+        async with aiofiles.open(self.log_file) as f:
             async for line in f:
                 if not line.strip():
                     continue

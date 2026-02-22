@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from kage.cli.ui.themes import KAGE_THEME
-from kage.plugins import PluginManager, PluginLoadError
+from kage.plugins import PluginLoadError, PluginManager
 
 plugin_app = typer.Typer(help="Plugin management commands")
 console = Console(theme=KAGE_THEME)
@@ -150,7 +150,7 @@ def validate_plugin(path: str = typer.Argument(..., help="Path to plugin directo
     # Validate schema
     try:
         schema = PluginSchema.from_yaml(yaml_path)
-        console.print(f"[green]✓ plugin.yaml is valid[/green]")
+        console.print("[green]✓ plugin.yaml is valid[/green]")
     except Exception as e:
         console.print(f"[red]✗ Invalid plugin.yaml: {e}[/red]")
         raise typer.Exit(1)
@@ -166,9 +166,9 @@ def validate_plugin(path: str = typer.Argument(..., help="Path to plugin directo
 
     is_safe, issues = validate_plugin_code(code)
     if is_safe:
-        console.print(f"[green]✓ Plugin code passed security checks[/green]")
+        console.print("[green]✓ Plugin code passed security checks[/green]")
     else:
-        console.print(f"[red]✗ Plugin code has security issues:[/red]")
+        console.print("[red]✗ Plugin code has security issues:[/red]")
         for issue in issues:
             console.print(f"  • {issue}")
         raise typer.Exit(1)
@@ -186,7 +186,7 @@ def create_plugin(
     ),
 ):
     """Create a new plugin scaffold."""
-    from kage.plugins.schema import PluginSchema, CapabilitySchema
+    from kage.plugins.schema import CapabilitySchema, PluginSchema
 
     plugin_dir = Path(output_dir) / name
     if plugin_dir.exists():

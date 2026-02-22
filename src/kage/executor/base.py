@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 
 @dataclass
@@ -105,7 +106,7 @@ class BaseExecutor(ABC):
                 if on_stderr:
                     on_stderr(chunk.text)
 
-        # Note: This is a simplified version - actual exit code needs 
+        # Note: This is a simplified version - actual exit code needs
         # to come from the streaming implementation
         return ExecutionResult(
             command=command,

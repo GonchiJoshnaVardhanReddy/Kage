@@ -15,9 +15,9 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
     """Run the first-time setup wizard."""
     if console is None:
         console = Console(theme=KAGE_THEME)
-    
+
     config = KageConfig.load()
-    
+
     # Welcome screen
     console.clear()
     console.print(KAGE_LOGO)
@@ -32,21 +32,21 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
         )
     )
     console.print()
-    
+
     # Step 1: LLM Provider
     console.print("[header]Step 1: LLM Provider[/header]")
     console.print()
-    
+
     provider_options = {
         "1": ("ollama", "Ollama (local, recommended for privacy)"),
         "2": ("openai", "OpenAI API (requires API key)"),
         "3": ("lmstudio", "LM Studio (local)"),
         "4": ("custom", "Custom OpenAI-compatible endpoint"),
     }
-    
+
     for key, (_, desc) in provider_options.items():
         console.print(f"  [{key}] {desc}")
-    
+
     console.print()
     choice = Prompt.ask(
         "[prompt]Select provider[/prompt]",
@@ -54,12 +54,12 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
         default="1",
         console=console,
     )
-    
+
     provider_name, _ = provider_options[choice]
-    
+
     # Configure based on provider
     llm_config = LLMConfig(provider=provider_name)
-    
+
     if provider_name == "ollama":
         llm_config.base_url = Prompt.ask(
             "[prompt]Ollama URL[/prompt]",
@@ -71,7 +71,7 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             default="llama3.1",
             console=console,
         )
-    
+
     elif provider_name == "openai":
         api_key = Prompt.ask(
             "[prompt]OpenAI API Key[/prompt]",
@@ -85,7 +85,7 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             default="gpt-4o-mini",
             console=console,
         )
-    
+
     elif provider_name == "lmstudio":
         llm_config.base_url = Prompt.ask(
             "[prompt]LM Studio URL[/prompt]",
@@ -97,7 +97,7 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             default="local-model",
             console=console,
         )
-    
+
     elif provider_name == "custom":
         llm_config.base_url = Prompt.ask(
             "[prompt]API Base URL[/prompt]",
@@ -113,54 +113,54 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             "[prompt]Model name[/prompt]",
             console=console,
         )
-    
+
     config.llm = llm_config
     console.print()
-    
+
     # Step 2: Security Settings
     console.print("[header]Step 2: Security Settings[/header]")
     console.print()
-    
+
     config.security.safe_mode = Confirm.ask(
         "[prompt]Enable Safe Mode? (blocks dangerous commands)[/prompt]",
         default=True,
         console=console,
     )
-    
+
     config.security.require_approval = Confirm.ask(
         "[prompt]Require approval before executing commands?[/prompt]",
         default=True,
         console=console,
     )
-    
+
     config.security.scope_enforcement = Confirm.ask(
         "[prompt]Enable scope enforcement? (warns about out-of-scope targets)[/prompt]",
         default=True,
         console=console,
     )
-    
+
     console.print()
-    
+
     # Step 3: Confirmation
     console.print("[header]Configuration Summary[/header]")
     console.print()
-    
+
     summary = Text()
     summary.append("LLM Provider: ", style="subtitle")
     summary.append(f"{config.llm.provider}\n", style="info")
     summary.append("Model: ", style="subtitle")
     summary.append(f"{config.llm.model}\n", style="info")
     summary.append("Safe Mode: ", style="subtitle")
-    summary.append(f"{'Enabled' if config.security.safe_mode else 'Disabled'}\n", 
+    summary.append(f"{'Enabled' if config.security.safe_mode else 'Disabled'}\n",
                    style="safe" if config.security.safe_mode else "unsafe")
     summary.append("Require Approval: ", style="subtitle")
     summary.append(f"{'Yes' if config.security.require_approval else 'No'}\n", style="info")
     summary.append("Scope Enforcement: ", style="subtitle")
     summary.append(f"{'Enabled' if config.security.scope_enforcement else 'Disabled'}", style="info")
-    
+
     console.print(Panel(summary, title="[panel.title]Summary[/panel.title]", border_style="panel.border"))
     console.print()
-    
+
     if Confirm.ask("[prompt]Save this configuration?[/prompt]", default=True, console=console):
         config.first_run = False
         config.save()
@@ -170,8 +170,8 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
     else:
         console.print()
         console.print("[warning]Configuration not saved. Run [command]kage setup[/command] to try again.[/warning]")
-    
+
     console.print()
     console.print("[info]Run [command]kage chat[/command] to start a session.[/info]")
-    
+
     return config

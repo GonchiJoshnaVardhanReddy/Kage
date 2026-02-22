@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from kage.persistence.config import LLMConfig
 
 
-def create_provider(config: "LLMConfig") -> BaseLLMProvider:
+def create_provider(config: LLMConfig) -> BaseLLMProvider:
     """Create an LLM provider based on configuration."""
     provider_map = {
         "ollama": OllamaProvider,

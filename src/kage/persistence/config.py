@@ -16,12 +16,12 @@ def get_config_dir() -> Path:
     env_dir = os.environ.get("KAGE_CONFIG_DIR")
     if env_dir:
         return Path(env_dir).expanduser()
-    
+
     if os.name == "nt":  # Windows
         base = Path(os.environ.get("APPDATA", "~"))
     else:  # Linux/macOS
         base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config"))
-    
+
     return base.expanduser() / "kage"
 
 
@@ -30,12 +30,12 @@ def get_data_dir() -> Path:
     env_dir = os.environ.get("KAGE_DATA_DIR")
     if env_dir:
         return Path(env_dir).expanduser()
-    
+
     if os.name == "nt":  # Windows
         base = Path(os.environ.get("LOCALAPPDATA", "~"))
     else:  # Linux/macOS
         base = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share"))
-    
+
     return base.expanduser() / "kage"
 
 
@@ -94,6 +94,49 @@ class UIConfig(BaseModel):
     markdown_code_theme: str = "monokai"
 
 
+class MCPServerConfig(BaseModel):
+    """Configuration for a single MCP server."""
+
+    name: str
+    transport: str = "stdio"  # stdio, sse, docker
+    command: str | None = None  # For stdio transport
+    url: str | None = None  # For SSE transport
+    docker_image: str | None = None  # For docker transport
+    env: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    auto_start: bool = True
+
+
+class MCPConfig(BaseModel):
+    """MCP (Model Context Protocol) configuration."""
+
+    enabled: bool = True
+    auto_discover: bool = True
+    docker_enabled: bool = True
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+    discovery_paths: list[str] = Field(default_factory=lambda: [
+        "~/.config/mcp",
+        "~/.mcp",
+    ])
+
+
+class HackModeConfig(BaseModel):
+    """Hack mode configuration."""
+
+    enabled: bool = True
+    auto_report: bool = True
+    report_format: str = "html"
+    max_concurrent_tasks: int = 5
+    default_timeout: int = 3600  # 1 hour
+    phases: list[str] = Field(default_factory=lambda: [
+        "planning",
+        "recon",
+        "enumeration",
+        "exploitation",
+        "reporting",
+    ])
+
+
 class KageConfig(BaseSettings):
     """Main configuration for Kage."""
 
@@ -107,7 +150,9 @@ class KageConfig(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
-    
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    hack_mode: HackModeConfig = Field(default_factory=HackModeConfig)
+
     first_run: bool = True
 
     @classmethod
@@ -116,13 +161,13 @@ class KageConfig(BaseSettings):
         return get_config_dir() / "config.yaml"
 
     @classmethod
-    def load(cls) -> "KageConfig":
+    def load(cls) -> KageConfig:
         """Load configuration from file."""
         config_path = cls.get_config_path()
-        
+
         if not config_path.exists():
             return cls()
-        
+
         try:
             with open(config_path) as f:
                 data = yaml.safe_load(f) or {}
@@ -134,9 +179,9 @@ class KageConfig(BaseSettings):
         """Save configuration to file."""
         config_path = self.get_config_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         data = self.model_dump(mode="json")
-        
+
         with open(config_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 

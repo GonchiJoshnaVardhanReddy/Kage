@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from kage.core.models import Scope, Target
+from kage.core.models import Scope
 
 
 @dataclass
@@ -97,13 +97,7 @@ class ScopeValidator:
 
         # Check against scope
         for pattern_type, pattern, original in self._compiled_patterns:
-            if pattern_type == "ip" and ip == pattern:
-                return ScopeValidationResult(
-                    in_scope=True,
-                    target_checked=ip_str,
-                    matched_scope=original,
-                )
-            elif pattern_type == "cidr" and ip in pattern:
+            if pattern_type == "ip" and ip == pattern or pattern_type == "cidr" and ip in pattern:
                 return ScopeValidationResult(
                     in_scope=True,
                     target_checked=ip_str,

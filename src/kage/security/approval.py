@@ -41,7 +41,7 @@ class ApprovalWorkflow:
 
     def __init__(
         self,
-        scope: "Scope",
+        scope: Scope,
         safe_mode_enabled: bool = True,
         require_approval: bool = True,
         scope_enforcement: bool = True,
@@ -62,7 +62,7 @@ class ApprovalWorkflow:
 
         # Step 1: Safe mode check
         safe_result = self.safe_mode_filter.check(command.command)
-        
+
         if safe_result.danger_level == DangerLevel.BLOCKED:
             if self.audit_logger:
                 await self.audit_logger.log_safe_mode_block(
@@ -70,7 +70,7 @@ class ApprovalWorkflow:
                     safe_result.reason or "Blocked by safe mode",
                     overridden=False,
                 )
-            
+
             return ApprovalResult(
                 decision=ApprovalDecision.BLOCKED,
                 command=command,
@@ -92,13 +92,13 @@ class ApprovalWorkflow:
         scope_results = []
         if self.scope_enforcement and self.scope_validator.scope.targets:
             in_scope, scope_results = self.scope_validator.validate_command(command.command)
-            
+
             for result in scope_results:
                 if not result.in_scope:
                     warnings.append(
                         f"🎯 OUT OF SCOPE: {result.target_checked} - {result.reason}"
                     )
-                    
+
                     if self.audit_logger:
                         await self.audit_logger.log_scope_violation(
                             command.command,
@@ -136,14 +136,14 @@ class ApprovalWorkflow:
         """Mark a command as approved."""
         command.status = CommandStatus.APPROVED
         command.approved_by = by
-        
+
         if self.audit_logger:
             await self.audit_logger.log_command_approved(command.command, by)
 
     async def reject(self, command: Command, reason: str | None = None) -> None:
         """Mark a command as rejected."""
         command.status = CommandStatus.REJECTED
-        
+
         if self.audit_logger:
             await self.audit_logger.log_command_rejected(command.command, reason)
 
@@ -151,6 +151,6 @@ class ApprovalWorkflow:
         """Update safe mode setting."""
         self.safe_mode_filter.enabled = enabled
 
-    def update_scope(self, scope: "Scope") -> None:
+    def update_scope(self, scope: Scope) -> None:
         """Update the scope validator."""
         self.scope_validator = ScopeValidator(scope)

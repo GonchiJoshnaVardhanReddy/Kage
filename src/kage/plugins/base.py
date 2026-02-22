@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kage.core.models import Session
@@ -79,7 +80,7 @@ class PluginContext:
 
     def __init__(
         self,
-        session: "Session",
+        session: Session,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
         self.session = session

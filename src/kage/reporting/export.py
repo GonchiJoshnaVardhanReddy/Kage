@@ -11,7 +11,6 @@ import aiofiles
 from kage.core.models import Session
 from kage.reporting.engine import ReportEngine
 
-
 OutputFormat = Literal["markdown", "html", "pdf"]
 
 
@@ -47,13 +46,13 @@ class ReportExporter:
         """Export report as Markdown."""
         template_name = template or "owasp/report.md.j2"
         content = self.engine.render_markdown(session, template_name)
-        
+
         # Ensure parent directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         async with aiofiles.open(output_path, "w", encoding="utf-8") as f:
             await f.write(content)
-        
+
         return output_path
 
     async def export_html(
@@ -65,13 +64,13 @@ class ReportExporter:
         """Export report as HTML."""
         template_name = template or "owasp/report.html.j2"
         content = self.engine.render_html(session, template_name)
-        
+
         # Ensure parent directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         async with aiofiles.open(output_path, "w", encoding="utf-8") as f:
             await f.write(content)
-        
+
         return output_path
 
     async def export_pdf(
@@ -88,18 +87,18 @@ class ReportExporter:
                 "PDF export requires weasyprint. "
                 "Install with: pip install weasyprint"
             )
-        
+
         # First render to HTML
         template_name = template or "owasp/report.html.j2"
         html_content = self.engine.render_html(session, template_name)
-        
+
         # Ensure parent directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Convert to PDF using weasyprint
         html = HTML(string=html_content)
         html.write_pdf(output_path)
-        
+
         return output_path
 
     def export_sync(
@@ -117,16 +116,16 @@ def get_default_filename(session: Session, format: OutputFormat) -> str:
     """Generate a default filename for a report."""
     session_short = session.id[:8]
     date_str = session.created_at.strftime("%Y%m%d")
-    
+
     extensions = {
         "markdown": "md",
         "html": "html",
         "pdf": "pdf",
     }
     ext = extensions.get(format, "md")
-    
+
     name = session.name or "pentest"
     # Sanitize name for filename
     name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    
+
     return f"report_{name}_{session_short}_{date_str}.{ext}"

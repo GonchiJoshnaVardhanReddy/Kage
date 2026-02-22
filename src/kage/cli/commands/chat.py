@@ -7,14 +7,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
 
-from kage.ai.base import LLMConfig as AILLMConfig
 from kage.ai.providers import create_provider
 from kage.core.conversation import ConversationManager
-from kage.core.models import Command, CommandStatus, Message, MessageRole, Session, Target
+from kage.core.models import Command, CommandStatus, Session, Target
 
 if TYPE_CHECKING:
     from kage.persistence.config import KageConfig
@@ -26,7 +23,7 @@ class ChatSession:
     def __init__(
         self,
         console: Console,
-        config: "KageConfig",
+        config: KageConfig,
         session_id: str | None = None,
         scope: str | None = None,
     ) -> None:
@@ -58,10 +55,10 @@ class ChatSession:
         from kage.persistence import SessionStorage
 
         self._session_storage = SessionStorage()
-        
+
         # Try exact match first
         loaded = await self._session_storage.load(session_id)
-        
+
         # Try partial match if exact fails
         if not loaded:
             sessions = await self._session_storage.list_sessions()
@@ -69,14 +66,14 @@ class ChatSession:
                 if s["id"].startswith(session_id):
                     loaded = await self._session_storage.load(s["id"])
                     break
-        
+
         if loaded:
             self.session = loaded
             self._resumed = True
             self.console.print(f"[success]Resumed session: {self.session.id[:8]}[/success]")
             self.console.print(f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]")
             return True
-        
+
         self.console.print(f"[warning]Session not found: {session_id}[/warning]")
         self.console.print("[muted]Starting new session instead.[/muted]")
         return False
@@ -188,6 +185,17 @@ class ChatSession:
             args = parts[1] if len(parts) > 1 else ""
             self._export_session(args)
 
+        elif cmd == "model":
+            self._change_model()
+
+        elif cmd in ("hacker", "hack"):
+            self._enter_hacker_mode()
+            return False  # Exit chat loop to enter hack mode
+
+        # Easter egg - hidden command
+        elif command.lower() in ("/whoareyou", "/who are you", "/who are you?"):
+            self._show_easter_egg()
+
         else:
             self.console.print(f"[error]Unknown command: /{cmd}[/error]")
             self.console.print("[muted]Type /help for available commands.[/muted]")
@@ -202,6 +210,8 @@ class ChatSession:
 [command]/help[/command]        - Show this help message
 [command]/exit[/command]        - End the session
 [command]/clear[/command]       - Clear the screen
+[command]/model[/command]       - Change LLM model/provider
+[command]/hacker[/command]      - Enter autonomous hack mode
 [command]/scope[/command]       - Show current scope
 [command]/safe[/command]        - Toggle safe mode
 [command]/findings[/command]    - List discovered findings
@@ -303,6 +313,7 @@ class ChatSession:
     def _export_session(self, args: str) -> None:
         """Export the current session to a file."""
         from pathlib import Path
+
         from kage.persistence import SessionStorage
 
         if not self._session_storage:
@@ -333,6 +344,166 @@ class ChatSession:
             else:
                 self.console.print("[error]Failed to export session[/error]")
 
+    def _show_easter_egg(self) -> None:
+        """Display the hidden easter egg."""
+        joker_card = """
+[bold red]    ┌─────────────────────┐[/bold red]
+[bold red]    │ ♠                 ♠ │[/bold red]
+[bold red]    │                     │[/bold red]
+[bold red]    │      [yellow]▄▄▄▄▄▄▄[/yellow]       │[/bold red]
+[bold red]    │     [yellow]█[/yellow][white]▀[/white] [cyan]◉[/cyan] [white]▀[/white][yellow]█[/yellow]      │[/bold red]
+[bold red]    │     [yellow]█[/yellow] [red]◡◡◡[/red] [yellow]█[/yellow]      │[/bold red]
+[bold red]    │      [yellow]███████[/yellow]       │[/bold red]
+[bold red]    │     [green]╔═══════╗[/green]      │[/bold red]
+[bold red]    │     [green]║ JOKER ║[/green]      │[/bold red]
+[bold red]    │     [green]╚═══════╝[/green]      │[/bold red]
+[bold red]    │                     │[/bold red]
+[bold red]    │ ♠                 ♠ │[/bold red]
+[bold red]    └─────────────────────┘[/bold red]
+"""
+        self.console.print(joker_card)
+        self.console.print()
+        self.console.print(
+            "[italic cyan]\"Jack of all trades. Master of none, "
+            "but oftentimes better than a master of one.\"[/italic cyan]"
+        )
+        self.console.print()
+
+    def _change_model(self) -> None:
+        """Change LLM model/provider interactively."""
+        from rich.prompt import Confirm, Prompt
+
+        self.console.print()
+        self.console.print("[header]Change LLM Model[/header]")
+        self.console.print()
+
+        # Show current settings
+        self.console.print(f"[info]Current: {self.config.llm.provider} / {self.config.llm.model}[/info]")
+        self.console.print()
+
+        # Provider selection
+        self.console.print("[bold]Select Provider:[/bold]")
+        self.console.print("  [cyan]1[/cyan] - Ollama (local)")
+        self.console.print("  [cyan]2[/cyan] - LM Studio (local)")
+        self.console.print("  [cyan]3[/cyan] - OpenAI (API key)")
+        self.console.print("  [cyan]4[/cyan] - Custom API")
+        self.console.print()
+
+        choice = Prompt.ask(
+            "[bold]Provider[/bold]",
+            choices=["1", "2", "3", "4"],
+            default="1",
+        )
+
+        provider = "ollama"
+        base_url = "http://localhost:11434"
+        api_key = None
+
+        if choice == "1":
+            provider = "ollama"
+            base_url = Prompt.ask(
+                "[bold]Ollama URL[/bold]",
+                default="http://localhost:11434",
+            )
+        elif choice == "2":
+            provider = "lmstudio"
+            base_url = Prompt.ask(
+                "[bold]LM Studio URL[/bold]",
+                default="http://localhost:1234/v1",
+            )
+        elif choice == "3":
+            provider = "openai"
+            base_url = "https://api.openai.com/v1"
+            api_key = Prompt.ask("[bold]OpenAI API Key[/bold]", password=True)
+        elif choice == "4":
+            provider = Prompt.ask("[bold]Provider name[/bold]", default="openai")
+            base_url = Prompt.ask("[bold]API Base URL[/bold]")
+            if Confirm.ask("[bold]Requires API key?[/bold]", default=False):
+                api_key = Prompt.ask("[bold]API Key[/bold]", password=True)
+
+        # Model name
+        self.console.print()
+        if provider == "ollama":
+            self.console.print("[dim]Common models: llama3.1, codellama, mistral, mixtral[/dim]")
+        elif provider == "openai":
+            self.console.print("[dim]Common models: gpt-4, gpt-4-turbo, gpt-3.5-turbo[/dim]")
+
+        model = Prompt.ask(
+            "[bold]Model name[/bold]",
+            default=self.config.llm.model,
+        )
+
+        # Update config
+        self.config.llm.provider = provider
+        self.config.llm.base_url = base_url
+        self.config.llm.model = model
+        if api_key:
+            self.config.llm.api_key = api_key
+
+        # Save config
+        if Confirm.ask("[bold]Save to config file?[/bold]", default=True):
+            self.config.save()
+            self.console.print("[success]Configuration saved![/success]")
+
+        # Reinitialize provider
+        self.console.print()
+        self.console.print("[info]Reconnecting to LLM...[/info]")
+
+        if asyncio.run(self._init_provider()):
+            self.console.print(f"[success]Now using: {provider} / {model}[/success]")
+        else:
+            self.console.print("[error]Failed to connect. Check settings.[/error]")
+
+    def _enter_hacker_mode(self) -> None:
+        """Enter autonomous hack mode."""
+        from rich.prompt import Prompt
+
+        self.console.print()
+        self.console.print("[bold red]🔥 ENTERING HACK MODE 🔥[/bold red]")
+        self.console.print()
+
+        # Get target
+        target = Prompt.ask(
+            "[bold]Enter target[/bold] (IP, domain, or URL)",
+        )
+
+        if not target:
+            self.console.print("[error]No target specified.[/error]")
+            return
+
+        # Get additional scope
+        self.console.print()
+        self.console.print("[dim]Add additional targets to scope (press Enter when done):[/dim]")
+
+        scope = [target]
+        while True:
+            additional = Prompt.ask(
+                "[bold]Additional scope[/bold]",
+                default="",
+            )
+            if not additional:
+                break
+            scope.append(additional)
+
+        # Save current session before entering hack mode
+        self._save_session()
+
+        # Close current provider
+        if self.provider:
+            asyncio.run(self.provider.close())
+
+        # Run hack mode
+        from kage.core.hackmode import run_hack_mode
+
+        self.console.clear()
+        asyncio.run(run_hack_mode(
+            console=self.console,
+            config=self.config,
+            target=target,
+            scope=scope,
+            skip_warning=False,
+        ))
+
     def _run_pending_commands(self) -> None:
         """Execute pending commands with approval workflow."""
         if not self._pending_commands:
@@ -340,7 +511,8 @@ class ChatSession:
             return
 
         from rich.prompt import Confirm
-        from kage.security import ApprovalWorkflow, ApprovalDecision
+
+        from kage.security import ApprovalDecision, ApprovalWorkflow
 
         # Create approval workflow
         workflow = ApprovalWorkflow(
@@ -528,7 +700,7 @@ class ChatSession:
 
 def chat_loop(
     console: Console,
-    config: "KageConfig",
+    config: KageConfig,
     session_id: str | None = None,
     scope: str | None = None,
 ) -> None:
