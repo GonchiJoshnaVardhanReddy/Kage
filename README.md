@@ -67,7 +67,7 @@ Get up and running in 60 seconds:
 
 ```bash
 # 1. Install Kage
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage && pip install -e .
 
 # 2. Make sure Ollama is running (or LM Studio)
@@ -88,7 +88,7 @@ That's it! Kage will auto-detect Ollama, find your models, and start chatting.
 
 **Linux/macOS:**
 ```bash
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage
 chmod +x scripts/install.sh
 ./scripts/install.sh
@@ -96,7 +96,7 @@ chmod +x scripts/install.sh
 
 **Windows (PowerShell as Administrator):**
 ```powershell
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 .\scripts\install.ps1
@@ -107,7 +107,7 @@ After installation, **restart your terminal** and type `kage` to start!
 ### Using Make
 
 ```bash
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage
 
 make setup        # Full install
@@ -118,7 +118,7 @@ make uninstall    # Uninstall
 ### Manual Install
 
 ```bash
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage
 pip install -e .
 ```
@@ -702,7 +702,7 @@ Contributions are welcome! Please read our contributing guidelines first.
 
 ```bash
 # Clone and install dev dependencies
-git clone https://github.com/yourusername/kage.git
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
 cd kage
 make setup-dev
 
