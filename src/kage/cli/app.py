@@ -50,9 +50,15 @@ def main_callback(
         console.print(f"[muted]Version {__version__}[/muted]")
         console.print()
         console.print("[header]Quick Start[/header]")
-        console.print("  [command]kage setup[/command]     Run first-time setup wizard")
-        console.print("  [command]kage chat[/command]      Start interactive session")
-        console.print("  [command]kage --help[/command]    Show all commands")
+        console.print("  [command]kage launch[/command]     Quick setup - auto-detect & start")
+        console.print("  [command]kage setup[/command]      Run first-time setup wizard")
+        console.print("  [command]kage chat[/command]       Start interactive session")
+        console.print("  [command]kage --help[/command]     Show all commands")
+        console.print()
+        console.print("[header]Quick Launch Examples[/header]")
+        console.print("  [command]kage launch[/command]             Auto-detect Ollama, start chat")
+        console.print("  [command]kage launch lmstudio[/command]    Use LM Studio")
+        console.print("  [command]kage launch --config[/command]    Configure only, don't start")
         console.print()
         console.print("[muted]For authorized security testing only.[/muted]")
 
@@ -62,6 +68,148 @@ def setup() -> None:
     """Run the first-time setup wizard."""
     from kage.cli.wizard import run_setup_wizard
     run_setup_wizard(console)
+
+
+@app.command()
+def launch(
+    provider: str = typer.Argument(
+        "ollama",
+        help="Provider to use: ollama, lmstudio, openai",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Model name (auto-detected if not specified).",
+    ),
+    config_only: bool = typer.Option(
+        False,
+        "--config",
+        help="Only configure, don't start chat.",
+    ),
+    url: str | None = typer.Option(
+        None,
+        "--url",
+        help="Custom base URL for the provider.",
+    ),
+) -> None:
+    """Quick launch - auto-configure and start chatting.
+
+    Examples:
+        kage launch              # Auto-detect Ollama, pick model, start chat
+        kage launch ollama       # Use Ollama with auto-detected model
+        kage launch lmstudio     # Use LM Studio
+        kage launch --config     # Only configure, don't start
+        kage launch -m llama3.1  # Use specific model
+    """
+    import asyncio
+
+    from kage.ai.providers.ollama import OllamaProvider
+    from kage.ai.providers.openai import LMStudioProvider, OpenAIProvider
+
+    config = KageConfig.load()
+
+    # Default URLs
+    provider_defaults = {
+        "ollama": "http://localhost:11434",
+        "lmstudio": "http://localhost:1234/v1",
+        "openai": "https://api.openai.com/v1",
+    }
+
+    provider = provider.lower()
+    if provider not in provider_defaults:
+        console.print(f"[error]Unknown provider: {provider}[/error]")
+        console.print("[muted]Available: ollama, lmstudio, openai[/muted]")
+        raise typer.Exit(1)
+
+    base_url = url or provider_defaults[provider]
+
+    console.print(KAGE_LOGO_SMALL)
+    console.print()
+
+    # Test connection and get models
+    async def test_and_get_models():
+        if provider == "ollama":
+            p = OllamaProvider(base_url=base_url)
+        elif provider == "lmstudio":
+            p = LMStudioProvider(base_url=base_url)
+        else:
+            p = OpenAIProvider(base_url=base_url, api_key=config.llm.api_key)
+
+        try:
+            connected = await p.check_connection()
+            models = await p.list_models() if connected else []
+            return connected, models
+        finally:
+            await p.close()
+
+    with console.status(f"[info]Connecting to {provider}...[/info]"):
+        connected, models = asyncio.run(test_and_get_models())
+
+    if not connected:
+        console.print(f"[error]✗ Could not connect to {provider}[/error]")
+        if provider == "ollama":
+            console.print("[muted]  Make sure Ollama is running: ollama serve[/muted]")
+        elif provider == "lmstudio":
+            console.print("[muted]  Make sure LM Studio server is running[/muted]")
+        console.print(f"[muted]  URL: {base_url}[/muted]")
+        raise typer.Exit(1)
+
+    console.print(f"[success]✓ Connected to {provider}[/success]")
+
+    # Select model
+    selected_model = model
+    if not selected_model:
+        if models:
+            selected_model = models[0]  # Use first available
+            console.print(f"[info]  Using model: {selected_model}[/info]")
+        else:
+            if provider == "ollama":
+                console.print("[warning]  No models found. Pull one: ollama pull llama3.1[/warning]")
+                raise typer.Exit(1)
+            elif provider == "lmstudio":
+                selected_model = "local-model"
+            else:
+                selected_model = "gpt-4o-mini"
+
+    # Update config
+    config.llm.provider = provider
+    config.llm.base_url = base_url
+    config.llm.model = selected_model
+    config.first_run = False
+    config.save()
+
+    console.print(f"[success]✓ Configured: {provider}/{selected_model}[/success]")
+    console.print(f"[muted]  Config saved to: {config.get_config_path()}[/muted]")
+
+    if config_only:
+        console.print()
+        console.print("[info]Run [command]kage chat[/command] to start a session.[/info]")
+        return
+
+    # Start chat
+    console.print()
+    console.print("[info]Starting chat...[/info]")
+    console.print()
+
+    console.clear()
+    console.print(KAGE_LOGO)
+
+    from kage.cli.ui.panels import create_status_panel
+    console.print(create_status_panel(
+        safe_mode=config.security.safe_mode,
+        scope=None,
+        session_id=None,
+        provider=config.llm.provider,
+        model=config.llm.model,
+    ))
+
+    console.print()
+    console.print("[info]Type your message or [command]/help[/command] for commands.[/info]")
+    console.print("[muted]Press Ctrl+C to exit.[/muted]")
+
+    from kage.cli.commands.chat import chat_loop
+    chat_loop(console, config, session_id=None, scope=None)
 
 
 @app.command()

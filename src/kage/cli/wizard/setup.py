@@ -2,13 +2,55 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
+from kage.ai.providers.ollama import OllamaProvider
+from kage.ai.providers.openai import LMStudioProvider, OpenAIProvider
 from kage.cli.ui.themes import KAGE_LOGO, KAGE_THEME
 from kage.persistence.config import KageConfig, LLMConfig
+
+
+async def _test_ollama_connection(base_url: str) -> tuple[bool, list[str]]:
+    """Test Ollama connection and list models."""
+    provider = OllamaProvider(base_url=base_url)
+    try:
+        connected = await provider.check_connection()
+        models = await provider.list_models() if connected else []
+        return connected, models
+    finally:
+        await provider.close()
+
+
+async def _test_lmstudio_connection(base_url: str) -> tuple[bool, list[str]]:
+    """Test LM Studio connection and list models."""
+    provider = LMStudioProvider(base_url=base_url)
+    try:
+        connected = await provider.check_connection()
+        models = await provider.list_models() if connected else []
+        return connected, models
+    finally:
+        await provider.close()
+
+
+async def _test_openai_connection(base_url: str, api_key: str) -> tuple[bool, list[str]]:
+    """Test OpenAI connection and list models."""
+    provider = OpenAIProvider(base_url=base_url, api_key=api_key)
+    try:
+        connected = await provider.check_connection()
+        models = await provider.list_models() if connected else []
+        return connected, models
+    finally:
+        await provider.close()
+
+
+def _run_async(coro):
+    """Run async coroutine in sync context."""
+    return asyncio.run(coro)
 
 
 def run_setup_wizard(console: Console | None = None) -> KageConfig:
@@ -66,11 +108,54 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             default="http://localhost:11434",
             console=console,
         )
-        llm_config.model = Prompt.ask(
-            "[prompt]Model name[/prompt]",
-            default="llama3.1",
-            console=console,
-        )
+
+        # Test connection
+        console.print()
+        with console.status("[info]Testing connection to Ollama...[/info]"):
+            connected, models = _run_async(_test_ollama_connection(llm_config.base_url))
+
+        if not connected:
+            console.print("[error]✗ Could not connect to Ollama![/error]")
+            console.print("[muted]  Make sure Ollama is running: ollama serve[/muted]")
+            console.print(f"[muted]  URL tested: {llm_config.base_url}[/muted]")
+            console.print()
+            if not Confirm.ask("[prompt]Continue anyway?[/prompt]", default=False, console=console):
+                console.print("[warning]Setup cancelled. Start Ollama and run [command]kage setup[/command] again.[/warning]")
+                return config
+            llm_config.model = Prompt.ask(
+                "[prompt]Model name[/prompt]",
+                default="llama3.1",
+                console=console,
+            )
+        else:
+            console.print("[success]✓ Connected to Ollama[/success]")
+            if models:
+                console.print(f"[info]  Found {len(models)} model(s)[/info]")
+                console.print()
+                console.print("[header]Available Models:[/header]")
+                for i, model in enumerate(models[:10], 1):
+                    console.print(f"  [{i}] {model}")
+                if len(models) > 10:
+                    console.print(f"  [muted]... and {len(models) - 10} more[/muted]")
+                console.print()
+
+                model_choice = Prompt.ask(
+                    "[prompt]Enter model number or name[/prompt]",
+                    default="1" if models else "llama3.1",
+                    console=console,
+                )
+                # Check if user entered a number
+                if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+                    llm_config.model = models[int(model_choice) - 1]
+                else:
+                    llm_config.model = model_choice
+            else:
+                console.print("[warning]  No models found. Pull a model: ollama pull llama3.1[/warning]")
+                llm_config.model = Prompt.ask(
+                    "[prompt]Model name[/prompt]",
+                    default="llama3.1",
+                    console=console,
+                )
 
     elif provider_name == "openai":
         api_key = Prompt.ask(
@@ -80,6 +165,22 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
         )
         llm_config.api_key = api_key
         llm_config.base_url = "https://api.openai.com/v1"
+
+        # Test connection
+        console.print()
+        with console.status("[info]Testing connection to OpenAI...[/info]"):
+            connected, models = _run_async(_test_openai_connection(llm_config.base_url, api_key))
+
+        if not connected:
+            console.print("[error]✗ Could not connect to OpenAI![/error]")
+            console.print("[muted]  Check your API key is valid[/muted]")
+            console.print()
+            if not Confirm.ask("[prompt]Continue anyway?[/prompt]", default=False, console=console):
+                console.print("[warning]Setup cancelled.[/warning]")
+                return config
+        else:
+            console.print("[success]✓ Connected to OpenAI[/success]")
+
         llm_config.model = Prompt.ask(
             "[prompt]Model name[/prompt]",
             default="gpt-4o-mini",
@@ -92,11 +193,53 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             default="http://localhost:1234/v1",
             console=console,
         )
-        llm_config.model = Prompt.ask(
-            "[prompt]Model name[/prompt]",
-            default="local-model",
-            console=console,
-        )
+
+        # Test connection
+        console.print()
+        with console.status("[info]Testing connection to LM Studio...[/info]"):
+            connected, models = _run_async(_test_lmstudio_connection(llm_config.base_url))
+
+        if not connected:
+            console.print("[error]✗ Could not connect to LM Studio![/error]")
+            console.print("[muted]  Make sure LM Studio is running with the local server enabled.[/muted]")
+            console.print(f"[muted]  URL tested: {llm_config.base_url}[/muted]")
+            console.print()
+            if not Confirm.ask("[prompt]Continue anyway?[/prompt]", default=False, console=console):
+                console.print("[warning]Setup cancelled. Start LM Studio server and run [command]kage setup[/command] again.[/warning]")
+                return config
+            llm_config.model = Prompt.ask(
+                "[prompt]Model name[/prompt]",
+                default="local-model",
+                console=console,
+            )
+        else:
+            console.print("[success]✓ Connected to LM Studio[/success]")
+            if models:
+                console.print(f"[info]  Found {len(models)} model(s)[/info]")
+                console.print()
+                console.print("[header]Available Models:[/header]")
+                for i, model in enumerate(models[:10], 1):
+                    console.print(f"  [{i}] {model}")
+                if len(models) > 10:
+                    console.print(f"  [muted]... and {len(models) - 10} more[/muted]")
+                console.print()
+
+                model_choice = Prompt.ask(
+                    "[prompt]Enter model number or name[/prompt]",
+                    default="1" if models else "local-model",
+                    console=console,
+                )
+                if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+                    llm_config.model = models[int(model_choice) - 1]
+                else:
+                    llm_config.model = model_choice
+            else:
+                console.print("[info]  LM Studio returns loaded model at runtime[/info]")
+                llm_config.model = Prompt.ask(
+                    "[prompt]Model name (or 'local-model')[/prompt]",
+                    default="local-model",
+                    console=console,
+                )
 
     elif provider_name == "custom":
         llm_config.base_url = Prompt.ask(

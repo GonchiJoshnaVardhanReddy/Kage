@@ -44,6 +44,7 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 
 ## 📋 Table of Contents
 
+- [Quick Start](#-quick-start)
 - [Installation](#-installation)
 - [LLM Setup Guide](#-llm-setup-guide)
   - [Option 1: Ollama (Recommended)](#option-1-ollama-recommended-free--local)
@@ -52,10 +53,32 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
   - [Option 4: Other APIs](#option-4-other-apis)
 - [Usage](#-usage)
 - [Hack Mode](#-hack-mode)
+- [CLI Commands](#-cli-commands)
 - [Chat Commands](#-chat-commands)
 - [Configuration](#-configuration)
 - [Security Tools](#-recommended-security-tools)
 - [License](#-license)
+
+---
+
+## ⚡ Quick Start
+
+Get up and running in 60 seconds:
+
+```bash
+# 1. Install Kage
+git clone https://github.com/yourusername/kage.git
+cd kage && pip install -e .
+
+# 2. Make sure Ollama is running (or LM Studio)
+ollama serve                    # In another terminal
+ollama pull llama3.1            # Download a model
+
+# 3. Launch!
+kage launch
+```
+
+That's it! Kage will auto-detect Ollama, find your models, and start chatting.
 
 ---
 
@@ -185,11 +208,26 @@ ollama list
 
 #### Step 4: Configure Kage
 
+**Quick Launch (Recommended):**
+```bash
+# Auto-detect and start immediately
+kage launch
+
+# This will:
+# ✓ Connect to Ollama
+# ✓ List your models
+# ✓ Pick the first one
+# ✓ Start chatting
+```
+
+**Or use Setup Wizard:**
 ```bash
 kage setup
 # Select "Ollama" when prompted
-# Or manually edit ~/.config/kage/config.yaml:
+# Pick from your available models
 ```
+
+**Or manually edit** `~/.config/kage/config.yaml`:
 
 ```yaml
 llm:
@@ -252,12 +290,28 @@ Available for Windows, macOS, and Linux.
 
 #### Step 4: Configure Kage
 
-In Kage chat, type `/model` or edit config:
+**Quick Launch (Recommended):**
+```bash
+kage launch lmstudio
+
+# This will:
+# ✓ Connect to LM Studio
+# ✓ Detect loaded model
+# ✓ Start chatting
+```
+
+**Or use Setup Wizard:**
+```bash
+kage setup
+# Select "LM Studio" when prompted
+```
+
+**Or manually edit config:**
 
 ```yaml
 llm:
   provider: lmstudio
-  model: local-model          # LM Studio ignores this, uses loaded model
+  model: local-model          # LM Studio uses whatever model is loaded
   base_url: http://localhost:1234/v1
 ```
 
@@ -268,6 +322,8 @@ llm:
 curl http://localhost:1234/v1/models
 
 # Start Kage
+kage launch lmstudio
+# or
 kage chat
 ```
 
@@ -370,16 +426,39 @@ llm:
 
 ## 💻 Usage
 
-### First-Time Setup
+### Quick Launch (Fastest Way to Start)
+
+```bash
+# Auto-detect Ollama, pick model, start chatting immediately
+kage launch
+
+# Specify provider
+kage launch ollama
+kage launch lmstudio
+
+# Use specific model
+kage launch -m llama3.1
+
+# Only configure (don't start chat)
+kage launch --config
+```
+
+The `launch` command will:
+- ✅ Test connection to your LLM provider
+- ✅ Auto-detect available models
+- ✅ Save configuration
+- ✅ Start chat immediately
+
+### Setup Wizard (Interactive)
 
 ```bash
 kage setup
 ```
 
 This wizard helps you:
-- Choose your LLM provider
-- Configure API keys
-- Set security preferences
+- Test connection to your LLM provider
+- Browse and select from available models
+- Configure security preferences
 
 ### Start Interactive Session
 
@@ -472,6 +551,30 @@ Hack mode generates:
 - Remediation recommendations
 
 ⚠️ **WARNING**: Hack mode disables safety restrictions. Only use on systems you have **written authorization** to test!
+
+---
+
+## 🖥️ CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `kage` | Show help and quick start guide |
+| `kage launch` | Quick auto-configure and start chat |
+| `kage launch ollama` | Launch with Ollama |
+| `kage launch lmstudio` | Launch with LM Studio |
+| `kage launch --config` | Configure only (don't start chat) |
+| `kage launch -m <model>` | Use specific model |
+| `kage setup` | Interactive setup wizard |
+| `kage chat` | Start interactive session |
+| `kage chat --scope <target>` | Chat with target scope |
+| `kage hack <target>` | Autonomous pentest mode |
+| `kage config --show` | View current configuration |
+| `kage config --reset` | Reset to defaults |
+| `kage session list` | List saved sessions |
+| `kage session resume <id>` | Resume a session |
+| `kage session export <id>` | Export session |
+| `kage report generate` | Generate report from session |
+| `kage plugin list` | List installed plugins |
 
 ---
 
