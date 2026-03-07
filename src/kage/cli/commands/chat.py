@@ -125,6 +125,11 @@ class ChatSession:
                 )
                 return False
 
+            # Close the client after connection check so it gets recreated
+            # fresh on the next asyncio.run() call (each asyncio.run creates
+            # a new event loop, stale clients from prior loops cause empty responses)
+            await self.provider.close()
+
             # Initialize conversation manager
             self.conversation = ConversationManager(
                 provider=self.provider,
@@ -158,7 +163,24 @@ class ChatSession:
         "load": "Load a saved session (use: /load <name>)",
         "saves": "List all saved sessions",
         "export": "Export session to file",
+        "import": "Import a session from file",
     }
+
+    def _setup_completer(self) -> None:
+        """Set up tab completion for slash commands."""
+        try:
+            import readline
+
+            commands = ["/" + cmd for cmd in self.COMMANDS]
+
+            def completer(text: str, state: int) -> str | None:
+                options = [c for c in commands if c.startswith(text)]
+                return options[state] if state < len(options) else None
+
+            readline.set_completer(completer)
+            readline.parse_and_bind("tab: complete")
+        except ImportError:
+            pass  # readline not available on Windows
 
     def _suggest_commands(self, partial: str) -> list[str]:
         """Get command suggestions based on partial input."""
@@ -193,7 +215,7 @@ class ChatSession:
         exact_commands = [
             "exit", "quit", "q", "help", "clear", "scope", "safe", "safemode",
             "findings", "history", "status", "run", "commands", "save", "load",
-            "saves", "export", "model", "mcp", "hacker", "hack",
+            "saves", "export", "import", "model", "mcp", "hacker", "hack",
         ]
 
         if cmd not in exact_commands:
@@ -252,6 +274,12 @@ class ChatSession:
 
         elif cmd == "export":
             self._export_session(args)
+
+        elif cmd == "import":
+            if args:
+                self._import_session(args)
+            else:
+                self.console.print("[muted]Usage: /import <path>[/muted]")
 
         elif cmd == "model":
             self._change_model()
@@ -513,6 +541,37 @@ class ChatSession:
                 self.console.print(f"[success]Exported to: {output_path}[/success]")
             else:
                 self.console.print("[error]Failed to export session[/error]")
+
+    def _import_session(self, path_str: str) -> None:
+        """Import a session from a JSON file."""
+        import json
+        from pathlib import Path
+
+        file_path = Path(path_str)
+        if not file_path.exists():
+            self.console.print(f"[error]File not found: {file_path}[/error]")
+            return
+
+        if file_path.suffix != ".json":
+            self.console.print("[error]Only JSON session files can be imported.[/error]")
+            return
+
+        try:
+            with open(file_path) as f:
+                data = json.load(f)
+            loaded = Session(**data)
+            self.session = loaded
+            if self.conversation:
+                self.conversation.session = self.session
+            self.console.print(
+                f"[success]Imported session: {loaded.name or loaded.id[:8]}[/success]"
+            )
+            self.console.print(
+                f"[muted]Messages: {len(self.session.messages)}, "
+                f"Commands: {len(self.session.commands)}[/muted]"
+            )
+        except Exception as e:
+            self.console.print(f"[error]Failed to import session: {e}[/error]")
 
     def _show_easter_egg(self) -> None:
         """Display the hidden easter egg."""
@@ -1040,6 +1099,31 @@ class ChatSession:
         # Add to session history
         self.session.commands.append(cmd)
 
+    async def _try_reconnect(self) -> bool:
+        """Attempt to reconnect to the LLM provider."""
+        self.console.print("[warning]Connection lost. Reconnecting...[/warning]")
+        for attempt in range(3):
+            try:
+                if self.provider:
+                    await self.provider.close()
+                self.provider = create_provider(self.config.llm)
+                connected = await self.provider.check_connection()
+                if connected:
+                    await self.provider.close()
+                    self.conversation = ConversationManager(
+                        provider=self.provider,
+                        config=self.config,
+                        session=self.session,
+                    )
+                    self.console.print("[success]Reconnected.[/success]")
+                    return True
+            except Exception:
+                pass
+            self.console.print(f"[warning]Retry {attempt + 1}/3...[/warning]")
+            import time
+            time.sleep(2 ** attempt)
+        return False
+
     async def _process_message(self, user_input: str) -> None:
         """Process a user message and generate response."""
         if not self.conversation:
@@ -1054,6 +1138,11 @@ class ChatSession:
                 user_input,
                 on_chunk=lambda c: self.console.print(c, end="", highlight=False),
             )
+
+            # If nothing was streamed (error/empty), print the response text directly
+            if response_text and response_text.startswith(("Error ", "No response")):
+                self.console.print(response_text, highlight=False)
+
             self.console.print()  # Newline after streaming
 
             # Store any suggested commands
@@ -1068,6 +1157,10 @@ class ChatSession:
         except Exception as e:
             self.console.print()
             self.console.print(f"[error]Error: {e}[/error]")
+            if await self._try_reconnect():
+                self.console.print("[info]Please resend your message.[/info]")
+            else:
+                self.console.print("[error]Could not reconnect. Use /exit to end session.[/error]")
 
     def run(self) -> None:
         """Run the interactive chat loop."""
@@ -1075,8 +1168,17 @@ class ChatSession:
         if not asyncio.run(self._init_provider()):
             return
 
-        self.console.print("[success]Connected to LLM.[/success]")
-        self.console.print()
+        # Set up tab completion for slash commands
+        self._setup_completer()
+
+        # Show animated startup banner with identity
+        from kage.cli.ui.banner import play_startup_animation
+
+        play_startup_animation(
+            self.console,
+            provider=self.config.llm.provider,
+            model=self.config.llm.model,
+        )
 
         while self.running:
             try:

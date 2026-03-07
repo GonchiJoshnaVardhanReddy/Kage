@@ -175,3 +175,20 @@ class ReportEngine:
     def get_available_formats(self) -> list[str]:
         """Get available output formats."""
         return ["markdown", "html", "pdf"]
+
+    def render_pdf(
+        self,
+        session: Session,
+        output_path: str,
+        template_name: str = "owasp/report.html.j2",
+    ) -> str:
+        """Render report as PDF. Requires weasyprint: pip install kage[pdf]"""
+        html_content = self.render_html(session, template_name)
+        try:
+            from weasyprint import HTML
+            HTML(string=html_content).write_pdf(output_path)
+            return output_path
+        except ImportError:
+            raise RuntimeError(
+                "PDF export requires WeasyPrint. Install with: pip install kage[pdf]"
+            )

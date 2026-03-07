@@ -123,6 +123,31 @@ def group_findings_by_target(
     return grouped
 
 
+class FindingsManager:
+    """Manages findings for a session."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.findings = session.findings
+
+    def deduplicate(self) -> int:
+        """Remove duplicate findings based on title + target + severity.
+        Returns the number of duplicates removed."""
+        seen: set[tuple[str, str, str]] = set()
+        unique: list[Finding] = []
+        removed = 0
+        for finding in self.findings:
+            key = (finding.title.lower().strip(), finding.target or "", finding.severity.value)
+            if key not in seen:
+                seen.add(key)
+                unique.append(finding)
+            else:
+                removed += 1
+        self.findings = unique
+        self.session.findings = unique
+        return removed
+
+
 class ReportData:
     """Data structure for report generation."""
 
