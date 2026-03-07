@@ -138,10 +138,68 @@ class ChatSession:
             self.console.print(f"[error]Failed to initialize LLM provider: {e}[/error]")
             return False
 
+    # Available slash commands for autocomplete
+    COMMANDS = {
+        "help": "Show this help message",
+        "exit": "End the session",
+        "clear": "Clear the screen",
+        "model": "Change LLM model/provider",
+        "mcp": "Manage MCP servers (Docker)",
+        "hacker": "Enter autonomous hack mode",
+        "hack": "Enter autonomous hack mode",
+        "scope": "Show current scope",
+        "safe": "Toggle safe mode",
+        "findings": "List discovered findings",
+        "history": "Show command history",
+        "status": "Show session status",
+        "commands": "Show pending commands",
+        "run": "Execute pending commands",
+        "save": "Save session (use: /save or /save <name>)",
+        "load": "Load a saved session (use: /load <name>)",
+        "saves": "List all saved sessions",
+        "export": "Export session to file",
+    }
+
+    def _suggest_commands(self, partial: str) -> list[str]:
+        """Get command suggestions based on partial input."""
+        partial = partial.lower()
+        matches = []
+        for cmd, desc in self.COMMANDS.items():
+            if cmd.startswith(partial):
+                matches.append((cmd, desc))
+        return matches
+
+    def _show_suggestions(self, partial: str) -> None:
+        """Display command suggestions."""
+        matches = self._suggest_commands(partial)
+        if not matches:
+            self.console.print(f"[error]No commands matching '/{partial}'[/error]")
+            self.console.print("[muted]Type /help for available commands.[/muted]")
+            return
+
+        self.console.print()
+        self.console.print("[header]Did you mean:[/header]")
+        for cmd, desc in matches:
+            self.console.print(f"  [command]/{cmd}[/command] - [muted]{desc}[/muted]")
+        self.console.print()
+
     def _handle_slash_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue loop."""
         parts = command[1:].split(maxsplit=1)
         cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        # Check for exact command match first
+        exact_commands = [
+            "exit", "quit", "q", "help", "clear", "scope", "safe", "safemode",
+            "findings", "history", "status", "run", "commands", "save", "load",
+            "saves", "export", "model", "mcp", "hacker", "hack",
+        ]
+
+        if cmd not in exact_commands:
+            # Show suggestions for partial matches
+            self._show_suggestions(cmd)
+            return True
 
         if cmd in ("exit", "quit", "q"):
             self.running = False
@@ -179,14 +237,27 @@ class ChatSession:
             self._show_pending_commands()
 
         elif cmd == "save":
-            self._save_session()
+            self._save_session(args if args else None)
+
+        elif cmd == "load":
+            if args:
+                self._load_session(args)
+            else:
+                self._list_saves()
+                self.console.print()
+                self.console.print("[muted]Usage: /load <name>[/muted]")
+
+        elif cmd == "saves":
+            self._list_saves()
 
         elif cmd == "export":
-            args = parts[1] if len(parts) > 1 else ""
             self._export_session(args)
 
         elif cmd == "model":
             self._change_model()
+
+        elif cmd == "mcp":
+            self._manage_mcp()
 
         elif cmd in ("hacker", "hack"):
             self._enter_hacker_mode()
@@ -196,10 +267,6 @@ class ChatSession:
         elif command.lower() in ("/whoareyou", "/who are you", "/who are you?"):
             self._show_easter_egg()
 
-        else:
-            self.console.print(f"[error]Unknown command: /{cmd}[/error]")
-            self.console.print("[muted]Type /help for available commands.[/muted]")
-
         return True
 
     def _show_help(self) -> None:
@@ -207,28 +274,39 @@ class ChatSession:
         help_text = """
 [header]Available Commands[/header]
 
-[command]/help[/command]        - Show this help message
-[command]/exit[/command]        - End the session
-[command]/clear[/command]       - Clear the screen
-[command]/model[/command]       - Change LLM model/provider
-[command]/hacker[/command]      - Enter autonomous hack mode
-[command]/scope[/command]       - Show current scope
-[command]/safe[/command]        - Toggle safe mode
-[command]/findings[/command]    - List discovered findings
-[command]/history[/command]     - Show command history
-[command]/status[/command]      - Show session status
-[command]/commands[/command]    - Show pending commands
-[command]/run[/command]         - Execute pending commands
-[command]/save[/command]        - Save current session
+[command]/help[/command]          - Show this help message
+[command]/exit[/command]          - End the session
+[command]/clear[/command]         - Clear the screen
+[command]/model[/command]         - Change LLM model/provider
+[command]/mcp[/command]           - Manage MCP servers (Docker)
+[command]/hacker[/command]        - Enter autonomous hack mode
+
+[header]Session Management[/header]
+
+[command]/save[/command]          - Save session with auto-generated ID
+[command]/save <name>[/command]   - Save session with custom name
+[command]/load <name>[/command]   - Load a saved session by name
+[command]/saves[/command]         - List all saved sessions
 [command]/export [path][/command] - Export session to file
+[command]/status[/command]        - Show session status
+
+[header]Security & Scope[/header]
+
+[command]/scope[/command]         - Show current scope
+[command]/safe[/command]          - Toggle safe mode
+[command]/findings[/command]      - List discovered findings
+
+[header]Commands & History[/header]
+
+[command]/commands[/command]      - Show pending commands
+[command]/run[/command]           - Execute pending commands
+[command]/history[/command]       - Show command history
 
 [header]Tips[/header]
 
-• Describe what you want to achieve, and I'll suggest commands
-• All commands require your approval before execution
-• Use safe mode to prevent dangerous operations
-• Define your scope to prevent accidental out-of-scope testing
-• Sessions auto-save periodically
+• Type partial commands to see suggestions (e.g., /h → /help, /history, /hack)
+• Use /save <name> to name your sessions for easy recall
+• Use /load <name> to continue where you left off
 """
         self.console.print(help_text)
 
@@ -299,16 +377,108 @@ class ChatSession:
             if cmd.description:
                 self.console.print(f"      [muted]{cmd.description}[/muted]")
 
-    def _save_session(self) -> None:
-        """Save the current session."""
+    def _save_session(self, name: str | None = None) -> None:
+        """Save the current session with optional name."""
         from kage.persistence import SessionStorage
 
         if not self._session_storage:
             self._session_storage = SessionStorage()
 
+        # If name provided, set it as session name/alias
+        if name:
+            self.session.name = name
+
         path = asyncio.run(self._session_storage.save(self.session))
-        self.console.print(f"[success]Session saved: {self.session.id[:8]}[/success]")
+
+        if name:
+            self.console.print(f"[success]Session saved as: [bold]{name}[/bold][/success]")
+        else:
+            self.console.print(f"[success]Session saved: {self.session.id[:8]}[/success]")
         self.console.print(f"[muted]Path: {path}[/muted]")
+        self.console.print()
+        self.console.print(f"[muted]Resume with: kage session resume {self.session.id[:8]}[/muted]")
+        if name:
+            self.console.print(f"[muted]Or in chat: /load {name}[/muted]")
+
+    def _load_session(self, name: str) -> None:
+        """Load a session by name or ID."""
+        from kage.persistence import SessionStorage
+
+        if not self._session_storage:
+            self._session_storage = SessionStorage()
+
+        self.console.print(f"[info]Loading session: {name}...[/info]")
+
+        # First try to find by name
+        sessions = asyncio.run(self._session_storage.list_sessions(limit=100))
+
+        found_session = None
+        for s in sessions:
+            # Check by name
+            if s.get("name", "").lower() == name.lower():
+                found_session = s
+                break
+            # Check by ID prefix
+            if s["id"].startswith(name):
+                found_session = s
+                break
+
+        if not found_session:
+            self.console.print(f"[error]Session not found: {name}[/error]")
+            self.console.print("[muted]Use /saves to list available sessions[/muted]")
+            return
+
+        # Load the session
+        loaded = asyncio.run(self._session_storage.load(found_session["id"]))
+
+        if loaded:
+            self.session = loaded
+            self.console.print(f"[success]✓ Loaded session: {loaded.name or loaded.id[:8]}[/success]")
+            self.console.print(f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]")
+
+            # Reinitialize conversation with loaded session
+            if self.conversation:
+                self.conversation.session = self.session
+        else:
+            self.console.print("[error]Failed to load session[/error]")
+
+    def _list_saves(self) -> None:
+        """List all saved sessions."""
+        from rich.table import Table
+
+        from kage.persistence import SessionStorage
+
+        if not self._session_storage:
+            self._session_storage = SessionStorage()
+
+        sessions = asyncio.run(self._session_storage.list_sessions(limit=20))
+
+        if not sessions:
+            self.console.print("[muted]No saved sessions found.[/muted]")
+            self.console.print("[muted]Use /save <name> to save your current session.[/muted]")
+            return
+
+        self.console.print()
+        table = Table(title="Saved Sessions", header_style="table.header")
+        table.add_column("Name/ID", style="highlight")
+        table.add_column("Updated", style="muted")
+        table.add_column("Scope", style="info")
+        table.add_column("Msgs", style="muted", justify="right")
+        table.add_column("Cmds", style="muted", justify="right")
+
+        for s in sessions:
+            name_display = s.get("name") or s["id"][:8]
+            table.add_row(
+                name_display,
+                s.get("updated_at", "")[:10],
+                s.get("scope_summary", "-")[:25],
+                str(s.get("message_count", 0)),
+                str(s.get("command_count", 0)),
+            )
+
+        self.console.print(table)
+        self.console.print()
+        self.console.print("[muted]Load a session: /load <name or id>[/muted]")
 
     def _export_session(self, args: str) -> None:
         """Export the current session to a file."""
@@ -370,15 +540,22 @@ class ChatSession:
         self.console.print()
 
     def _change_model(self) -> None:
-        """Change LLM model/provider interactively."""
+        """Change LLM model/provider interactively with auto-detection."""
+        import asyncio
+
         from rich.prompt import Confirm, Prompt
+
+        from kage.ai.providers.ollama import OllamaProvider
+        from kage.ai.providers.openai import LMStudioProvider
 
         self.console.print()
         self.console.print("[header]Change LLM Model[/header]")
         self.console.print()
 
         # Show current settings
-        self.console.print(f"[info]Current: {self.config.llm.provider} / {self.config.llm.model}[/info]")
+        self.console.print(
+            f"[info]Current: {self.config.llm.provider} / {self.config.llm.model}[/info]"
+        )
         self.console.print()
 
         # Provider selection
@@ -405,33 +582,103 @@ class ChatSession:
                 "[bold]Ollama URL[/bold]",
                 default="http://localhost:11434",
             )
+            # Test connection and list models
+            self.console.print()
+            with self.console.status("[info]Connecting to Ollama...[/info]"):
+
+                async def get_ollama_models():
+                    p = OllamaProvider(base_url=base_url)
+                    try:
+                        connected = await p.check_connection()
+                        models = await p.list_models() if connected else []
+                        return connected, models
+                    finally:
+                        await p.close()
+
+                connected, models = asyncio.run(get_ollama_models())
+
+            if connected and models:
+                self.console.print("[success]✓ Connected[/success]")
+                self.console.print()
+                self.console.print("[header]Available Models:[/header]")
+                for i, m in enumerate(models[:15], 1):
+                    self.console.print(f"  [cyan]{i}[/cyan] - {m}")
+                self.console.print()
+                model_choice = Prompt.ask(
+                    "[bold]Select model (number or name)[/bold]",
+                    default="1",
+                )
+                if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+                    model = models[int(model_choice) - 1]
+                else:
+                    model = model_choice
+            elif connected:
+                self.console.print("[warning]Connected but no models found[/warning]")
+                self.console.print("[muted]Pull a model: ollama pull llama3.1[/muted]")
+                model = Prompt.ask("[bold]Model name[/bold]", default="llama3.1")
+            else:
+                self.console.print("[error]Could not connect to Ollama[/error]")
+                return
+
         elif choice == "2":
             provider = "lmstudio"
             base_url = Prompt.ask(
                 "[bold]LM Studio URL[/bold]",
                 default="http://localhost:1234/v1",
             )
+            # Test connection
+            self.console.print()
+            with self.console.status("[info]Connecting to LM Studio...[/info]"):
+
+                async def get_lmstudio_models():
+                    p = LMStudioProvider(base_url=base_url)
+                    try:
+                        connected = await p.check_connection()
+                        models = await p.list_models() if connected else []
+                        return connected, models
+                    finally:
+                        await p.close()
+
+                connected, models = asyncio.run(get_lmstudio_models())
+
+            if connected:
+                self.console.print("[success]✓ Connected[/success]")
+                if models:
+                    self.console.print()
+                    self.console.print("[header]Available Models:[/header]")
+                    for i, m in enumerate(models[:10], 1):
+                        self.console.print(f"  [cyan]{i}[/cyan] - {m}")
+                    self.console.print()
+                    model_choice = Prompt.ask(
+                        "[bold]Select model (number or name)[/bold]",
+                        default="1",
+                    )
+                    if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+                        model = models[int(model_choice) - 1]
+                    else:
+                        model = model_choice
+                else:
+                    model = Prompt.ask(
+                        "[bold]Model name[/bold]", default="local-model"
+                    )
+            else:
+                self.console.print("[error]Could not connect to LM Studio[/error]")
+                return
+
         elif choice == "3":
             provider = "openai"
             base_url = "https://api.openai.com/v1"
             api_key = Prompt.ask("[bold]OpenAI API Key[/bold]", password=True)
+            self.console.print()
+            self.console.print("[dim]Models: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo[/dim]")
+            model = Prompt.ask("[bold]Model name[/bold]", default="gpt-4o-mini")
+
         elif choice == "4":
             provider = Prompt.ask("[bold]Provider name[/bold]", default="openai")
             base_url = Prompt.ask("[bold]API Base URL[/bold]")
             if Confirm.ask("[bold]Requires API key?[/bold]", default=False):
                 api_key = Prompt.ask("[bold]API Key[/bold]", password=True)
-
-        # Model name
-        self.console.print()
-        if provider == "ollama":
-            self.console.print("[dim]Common models: llama3.1, codellama, mistral, mixtral[/dim]")
-        elif provider == "openai":
-            self.console.print("[dim]Common models: gpt-4, gpt-4-turbo, gpt-3.5-turbo[/dim]")
-
-        model = Prompt.ask(
-            "[bold]Model name[/bold]",
-            default=self.config.llm.model,
-        )
+            model = Prompt.ask("[bold]Model name[/bold]", default=self.config.llm.model)
 
         # Update config
         self.config.llm.provider = provider
@@ -441,6 +688,7 @@ class ChatSession:
             self.config.llm.api_key = api_key
 
         # Save config
+        self.console.print()
         if Confirm.ask("[bold]Save to config file?[/bold]", default=True):
             self.config.save()
             self.console.print("[success]Configuration saved![/success]")
@@ -453,6 +701,173 @@ class ChatSession:
             self.console.print(f"[success]Now using: {provider} / {model}[/success]")
         else:
             self.console.print("[error]Failed to connect. Check settings.[/error]")
+
+    def _manage_mcp(self) -> None:
+        """Manage MCP servers through Docker."""
+        import subprocess
+
+        from rich.prompt import Confirm, Prompt
+        from rich.table import Table
+
+        self.console.print()
+        self.console.print("[header]MCP Server Management[/header]")
+        self.console.print()
+
+        # Check if Docker is available
+        try:
+            result = subprocess.run(
+                ["docker", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                self.console.print("[error]Docker not found or not running[/error]")
+                self.console.print("[muted]Install Docker: https://docs.docker.com/get-docker/[/muted]")
+                return
+            self.console.print("[success]✓ Docker available[/success]")
+        except Exception:
+            self.console.print("[error]Docker not available[/error]")
+            return
+
+        self.console.print()
+        self.console.print("[bold]Options:[/bold]")
+        self.console.print("  [cyan]1[/cyan] - List running MCP containers")
+        self.console.print("  [cyan]2[/cyan] - Start an MCP server")
+        self.console.print("  [cyan]3[/cyan] - Stop an MCP server")
+        self.console.print("  [cyan]4[/cyan] - Pull MCP server image")
+        self.console.print("  [cyan]5[/cyan] - View configured servers")
+        self.console.print()
+
+        choice = Prompt.ask("[bold]Select option[/bold]", choices=["1", "2", "3", "4", "5"], default="1")
+
+        if choice == "1":
+            # List running containers
+            self.console.print()
+            result = subprocess.run(
+                ["docker", "ps", "--filter", "label=mcp-server", "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"],
+                capture_output=True,
+                text=True,
+            )
+            if result.stdout.strip():
+                self.console.print("[header]Running MCP Containers:[/header]")
+                self.console.print(result.stdout)
+            else:
+                # Show all containers that might be MCP
+                result = subprocess.run(
+                    ["docker", "ps", "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}"],
+                    capture_output=True,
+                    text=True,
+                )
+                self.console.print("[header]Running Docker Containers:[/header]")
+                self.console.print(result.stdout if result.stdout.strip() else "[muted]No containers running[/muted]")
+
+        elif choice == "2":
+            # Start an MCP server
+            self.console.print()
+            self.console.print("[header]Popular MCP Servers:[/header]")
+            self.console.print("  [cyan]1[/cyan] - mcp/filesystem - File system access")
+            self.console.print("  [cyan]2[/cyan] - mcp/fetch - HTTP fetch capabilities")
+            self.console.print("  [cyan]3[/cyan] - mcp/sqlite - SQLite database")
+            self.console.print("  [cyan]4[/cyan] - mcp/puppeteer - Browser automation")
+            self.console.print("  [cyan]5[/cyan] - Custom image")
+            self.console.print()
+
+            server_choice = Prompt.ask("[bold]Select server[/bold]", choices=["1", "2", "3", "4", "5"], default="1")
+
+            images = {
+                "1": "mcp/filesystem",
+                "2": "mcp/fetch",
+                "3": "mcp/sqlite",
+                "4": "mcp/puppeteer",
+            }
+
+            if server_choice == "5":
+                image = Prompt.ask("[bold]Docker image name[/bold]")
+            else:
+                image = images.get(server_choice, "mcp/filesystem")
+
+            container_name = Prompt.ask("[bold]Container name[/bold]", default=f"kage-{image.split('/')[-1]}")
+
+            self.console.print()
+            self.console.print(f"[info]Starting {image}...[/info]")
+
+            result = subprocess.run(
+                ["docker", "run", "-d", "--name", container_name, "--label", "mcp-server=true", image],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode == 0:
+                self.console.print(f"[success]✓ Started: {container_name}[/success]")
+
+                # Add to config
+                if Confirm.ask("[bold]Add to Kage config?[/bold]", default=True):
+                    from kage.persistence.config import MCPServerConfig
+                    mcp_config = MCPServerConfig(
+                        name=container_name,
+                        transport="docker",
+                        docker_image=image,
+                    )
+                    self.config.mcp.servers.append(mcp_config)
+                    self.config.save()
+                    self.console.print("[success]Added to config[/success]")
+            else:
+                self.console.print(f"[error]Failed to start: {result.stderr}[/error]")
+
+        elif choice == "3":
+            # Stop a container
+            container = Prompt.ask("[bold]Container name to stop[/bold]")
+            if container:
+                result = subprocess.run(
+                    ["docker", "stop", container],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    self.console.print(f"[success]✓ Stopped: {container}[/success]")
+                    # Optionally remove
+                    if Confirm.ask("[bold]Remove container?[/bold]", default=False):
+                        subprocess.run(["docker", "rm", container], capture_output=True)
+                        self.console.print("[success]Container removed[/success]")
+                else:
+                    self.console.print(f"[error]Failed: {result.stderr}[/error]")
+
+        elif choice == "4":
+            # Pull an image
+            image = Prompt.ask("[bold]Image to pull[/bold]", default="mcp/filesystem")
+            self.console.print(f"[info]Pulling {image}...[/info]")
+            result = subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                self.console.print(f"[success]✓ Pulled: {image}[/success]")
+            else:
+                self.console.print(f"[error]Failed: {result.stderr}[/error]")
+
+        elif choice == "5":
+            # View configured servers
+            self.console.print()
+            if self.config.mcp.servers:
+                table = Table(title="Configured MCP Servers", header_style="table.header")
+                table.add_column("Name", style="highlight")
+                table.add_column("Transport", style="info")
+                table.add_column("Image/Command", style="muted")
+                table.add_column("Enabled", style="info")
+
+                for server in self.config.mcp.servers:
+                    table.add_row(
+                        server.name,
+                        server.transport,
+                        server.docker_image or server.command or "-",
+                        "✓" if server.enabled else "✗",
+                    )
+                self.console.print(table)
+            else:
+                self.console.print("[muted]No MCP servers configured[/muted]")
+                self.console.print("[muted]Use option 2 to start a server[/muted]")
 
     def _enter_hacker_mode(self) -> None:
         """Enter autonomous hack mode."""
@@ -665,11 +1080,12 @@ class ChatSession:
 
         while self.running:
             try:
-                # Get user input
+                # Get user input with styled prompt box
                 self.console.print()
-                user_input = self.console.input(
-                    "[prompt]kage[/prompt][prompt.arrow]>[/prompt.arrow] "
-                )
+                self.console.print("[cyan]╭─[/cyan][bold cyan] kage [/bold cyan][cyan]─────────────────────────────────────────────────────────[/cyan]")
+                self.console.print("[cyan]│[/cyan]")
+                user_input = self.console.input("[cyan]│[/cyan] [prompt.arrow]>[/prompt.arrow] ")
+                self.console.print("[cyan]╰──────────────────────────────────────────────────────────────────[/cyan]")
 
                 if not user_input.strip():
                     continue
