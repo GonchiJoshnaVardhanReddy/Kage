@@ -1,6 +1,5 @@
 """End-to-end tests for Kage CLI."""
 
-import pytest
 import subprocess
 import sys
 

@@ -70,7 +70,6 @@ DEFAULT_ALLOWED_IMPORTS = [
     "enum",
     "ipaddress",
     "urllib.parse",
-
     # Kage modules
     "kage.plugins.base",
     "kage.core.models",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -73,6 +74,47 @@ class Capability:
                 },
             },
         }
+
+
+def capability(
+    name: str,
+    description: str,
+    parameters: list[CapabilityParameter] | None = None,
+    dangerous: bool = False,
+    requires_approval: bool = True,
+    category: str = "general",
+) -> Callable:
+    """Decorator to mark a method as a plugin capability.
+
+    Usage:
+        @capability(
+            name="port_scan",
+            description="Generate an nmap port scan command",
+            parameters=[CapabilityParameter(name="target", description="Target IP/host")],
+        )
+        def port_scan(self, target: str) -> str:
+            return f"nmap -sV {target}"
+    """
+
+    def decorator(func: Callable) -> Callable:
+        # Store capability metadata on the function
+        func._capability_meta = {  # type: ignore[attr-defined]
+            "name": name,
+            "description": description,
+            "parameters": parameters or [],
+            "dangerous": dangerous,
+            "requires_approval": requires_approval,
+            "category": category,
+        }
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        wrapper._capability_meta = func._capability_meta  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorator
 
 
 class PluginContext:
@@ -174,6 +216,22 @@ class BasePlugin(ABC):
             category=category or self.category,
         )
 
+    def _auto_register_capabilities(self) -> None:
+        """Auto-register methods decorated with @capability."""
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name, None)
+            if callable(attr) and hasattr(attr, "_capability_meta"):
+                meta = attr._capability_meta
+                self.register_capability(
+                    name=meta["name"],
+                    description=meta["description"],
+                    handler=attr,
+                    parameters=meta["parameters"],
+                    dangerous=meta["dangerous"],
+                    requires_approval=meta["requires_approval"],
+                    category=meta.get("category", self.category),
+                )
+
     def get_capabilities(self) -> list[Capability]:
         """Get all registered capabilities."""
         return list(self._capabilities.values())
@@ -184,12 +242,19 @@ class BasePlugin(ABC):
 
     async def invoke(self, capability_name: str, **kwargs: Any) -> Any:
         """Invoke a capability by name."""
-        capability = self._capabilities.get(capability_name)
-        if not capability:
+        cap = self._capabilities.get(capability_name)
+        if not cap:
             raise ValueError(f"Unknown capability: {capability_name}")
 
+        # Enforce approval for dangerous capabilities
+        if cap.dangerous and cap.requires_approval:
+            raise PermissionError(
+                f"Capability '{capability_name}' is marked dangerous and requires "
+                f"explicit user approval before invocation."
+            )
+
         # Validate parameters
-        for param in capability.parameters:
+        for param in cap.parameters:
             if param.required and param.name not in kwargs:
                 if param.default is not None:
                     kwargs[param.name] = param.default
@@ -197,7 +262,7 @@ class BasePlugin(ABC):
                     raise ValueError(f"Missing required parameter: {param.name}")
 
         # Call handler
-        result = capability.handler(**kwargs)
+        result = cap.handler(**kwargs)
 
         # Handle async handlers
         if hasattr(result, "__await__"):
@@ -207,7 +272,12 @@ class BasePlugin(ABC):
 
     @abstractmethod
     def setup(self) -> None:
-        """Set up the plugin and register capabilities."""
+        """Set up the plugin and register capabilities.
+
+        Capabilities can be registered manually via register_capability()
+        or automatically via the @capability decorator on methods.
+        Call self._auto_register_capabilities() to discover decorated methods.
+        """
         ...
 
     def cleanup(self) -> None:
@@ -216,7 +286,7 @@ class BasePlugin(ABC):
 
     def check_requirements(self) -> tuple[bool, list[str]]:
         """Check if required tools are available.
-        
+
         Returns:
             Tuple of (all_available, list of missing tools)
         """

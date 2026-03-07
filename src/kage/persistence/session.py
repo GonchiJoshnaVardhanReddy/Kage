@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-from datetime import datetime
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,9 @@ import aiofiles
 
 from kage.core.models import Session
 from kage.persistence.config import get_data_dir
+from kage.utils import utcnow
+
+logger = logging.getLogger(__name__)
 
 
 class SessionStorage:
@@ -30,15 +34,31 @@ class SessionStorage:
         return self.storage_dir / "index.json"
 
     async def save(self, session: Session) -> Path:
-        """Save a session to disk."""
-        session.updated_at = datetime.utcnow()
+        """Save a session to disk using atomic write (temp file + rename)."""
+        session.updated_at = utcnow()
         path = self._get_session_path(session.id)
 
         # Serialize session
         data = session.model_dump(mode="json")
+        content = json.dumps(data, indent=2, default=str)
 
-        async with aiofiles.open(path, "w") as f:
-            await f.write(json.dumps(data, indent=2, default=str))
+        # Atomic write: write to temp file in same dir, then rename
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=self.storage_dir, suffix=".tmp", prefix=".session_")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except Exception:
+                # Clean up temp file on failure
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
+        except Exception as e:
+            logger.error("Failed to save session %s: %s", session.id, e)
+            raise
 
         # Update index
         await self._update_index(session)
@@ -56,7 +76,11 @@ class SessionStorage:
             async with aiofiles.open(path) as f:
                 data = json.loads(await f.read())
             return Session(**data)
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger.error("Corrupted session file %s: %s", path, e)
+            return None
+        except Exception as e:
+            logger.error("Failed to load session %s: %s", session_id, e)
             return None
 
     async def delete(self, session_id: str) -> bool:
@@ -70,7 +94,8 @@ class SessionStorage:
             os.remove(path)
             await self._remove_from_index(session_id)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to delete session %s: %s", session_id, e)
             return False
 
     async def list_sessions(
@@ -103,7 +128,8 @@ class SessionStorage:
 
             return sessions
 
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to list sessions: %s", e)
             return []
 
     async def _update_index(self, session: Session) -> None:
@@ -116,8 +142,8 @@ class SessionStorage:
             try:
                 async with aiofiles.open(index_path) as f:
                     index = json.loads(await f.read())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to read session index, resetting: %s", e)
 
         # Update entry
         scope_summary = ""
@@ -159,8 +185,8 @@ class SessionStorage:
             async with aiofiles.open(index_path, "w") as f:
                 await f.write(json.dumps(index, indent=2))
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to remove session %s from index: %s", session_id, e)
 
     def get_session_file(self, session_id: str) -> Path | None:
         """Get the path to a session file if it exists."""
@@ -191,7 +217,8 @@ class SessionStorage:
 
             return True
 
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to export session %s: %s", session_id, e)
             return False
 
     def _session_to_markdown(self, session: Session) -> str:
@@ -269,7 +296,7 @@ class AutoSaveSession:
         self.session = session
         self.storage = storage
         self.save_interval = save_interval
-        self._last_save = datetime.utcnow()
+        self._last_save = utcnow()
         self._dirty = False
 
     def mark_dirty(self) -> None:
@@ -281,7 +308,7 @@ class AutoSaveSession:
         if not self._dirty:
             return False
 
-        now = datetime.utcnow()
+        now = utcnow()
         elapsed = (now - self._last_save).total_seconds()
 
         if elapsed >= self.save_interval:
@@ -295,6 +322,6 @@ class AutoSaveSession:
     async def force_save(self) -> Path:
         """Force immediate save."""
         path = await self.storage.save(self.session)
-        self._last_save = datetime.utcnow()
+        self._last_save = utcnow()
         self._dirty = False
         return path

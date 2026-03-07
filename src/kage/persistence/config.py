@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from asyncio import to_thread
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 def get_config_dir() -> Path:
@@ -58,16 +62,18 @@ class SecurityConfig(BaseModel):
     require_approval: bool = True
     audit_enabled: bool = True
     scope_enforcement: bool = True
-    dangerous_commands: list[str] = Field(default_factory=lambda: [
-        "rm -rf",
-        "mkfs",
-        "dd if=",
-        ":(){:|:&};:",
-        "> /dev/sda",
-        "chmod -R 777 /",
-        "wget.*|.*sh",
-        "curl.*|.*bash",
-    ])
+    dangerous_commands: list[str] = Field(
+        default_factory=lambda: [
+            "rm -rf",
+            "mkfs",
+            "dd if=",
+            ":(){:|:&};:",
+            "> /dev/sda",
+            "chmod -R 777 /",
+            "wget.*|.*sh",
+            "curl.*|.*bash",
+        ]
+    )
 
 
 class SessionConfig(BaseModel):
@@ -114,10 +120,12 @@ class MCPConfig(BaseModel):
     auto_discover: bool = True
     docker_enabled: bool = True
     servers: list[MCPServerConfig] = Field(default_factory=list)
-    discovery_paths: list[str] = Field(default_factory=lambda: [
-        "~/.config/mcp",
-        "~/.mcp",
-    ])
+    discovery_paths: list[str] = Field(
+        default_factory=lambda: [
+            "~/.config/mcp",
+            "~/.mcp",
+        ]
+    )
 
 
 class HackModeConfig(BaseModel):
@@ -128,13 +136,15 @@ class HackModeConfig(BaseModel):
     report_format: str = "html"
     max_concurrent_tasks: int = 5
     default_timeout: int = 3600  # 1 hour
-    phases: list[str] = Field(default_factory=lambda: [
-        "planning",
-        "recon",
-        "enumeration",
-        "exploitation",
-        "reporting",
-    ])
+    phases: list[str] = Field(
+        default_factory=lambda: [
+            "planning",
+            "recon",
+            "enumeration",
+            "exploitation",
+            "reporting",
+        ]
+    )
 
 
 class KageConfig(BaseSettings):
@@ -172,7 +182,11 @@ class KageConfig(BaseSettings):
             with open(config_path) as f:
                 data = yaml.safe_load(f) or {}
             return cls(**data)
-        except Exception:
+        except yaml.YAMLError as e:
+            logger.error("Failed to parse config %s: %s — using defaults", config_path, e)
+            return cls()
+        except Exception as e:
+            logger.error("Failed to load config %s: %s — using defaults", config_path, e)
             return cls()
 
     def save(self) -> None:
@@ -191,3 +205,12 @@ class KageConfig(BaseSettings):
             if hasattr(self, key):
                 setattr(self, key, value)
         self.save()
+
+    @classmethod
+    async def aload(cls) -> KageConfig:
+        """Async version of load — runs I/O in a thread."""
+        return await to_thread(cls.load)
+
+    async def asave(self) -> None:
+        """Async version of save — runs I/O in a thread."""
+        await to_thread(self.save)

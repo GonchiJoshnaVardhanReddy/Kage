@@ -122,7 +122,9 @@ class PluginSandbox:
             "__doc__": None,
         }
 
-    def execute_code(self, code: str, extra_globals: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_code(
+        self, code: str, extra_globals: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute code in the sandbox and return the resulting namespace."""
         sandbox_globals = self.create_restricted_globals()
         if extra_globals:
@@ -162,7 +164,7 @@ class PluginSandbox:
 
 def validate_plugin_code(code: str) -> tuple[bool, list[str]]:
     """Validate plugin code for security issues.
-    
+
     Returns:
         Tuple of (is_safe, list of warnings/errors)
     """
@@ -180,29 +182,21 @@ def validate_plugin_code(code: str) -> tuple[bool, list[str]]:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id in ("eval", "exec", "compile", "__import__"):
-                    issues.append(
-                        f"Line {node.lineno}: Use of '{node.func.id}' is restricted"
-                    )
+                    issues.append(f"Line {node.lineno}: Use of '{node.func.id}' is restricted")
 
         # Check for dangerous attribute access
         if isinstance(node, ast.Attribute):
             if node.attr in ("__class__", "__bases__", "__subclasses__", "__globals__"):
-                issues.append(
-                    f"Line {node.lineno}: Access to '{node.attr}' is restricted"
-                )
+                issues.append(f"Line {node.lineno}: Access to '{node.attr}' is restricted")
 
         # Check for import statements
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in BLOCKED_IMPORTS:
-                    issues.append(
-                        f"Line {node.lineno}: Import of '{alias.name}' is blocked"
-                    )
+                    issues.append(f"Line {node.lineno}: Import of '{alias.name}' is blocked")
 
         if isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] in BLOCKED_IMPORTS:
-                issues.append(
-                    f"Line {node.lineno}: Import from '{node.module}' is blocked"
-                )
+                issues.append(f"Line {node.lineno}: Import from '{node.module}' is blocked")
 
     return len(issues) == 0, issues

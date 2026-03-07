@@ -29,14 +29,17 @@ def check_python_version() -> bool:
 
 def check_command_exists(cmd: str) -> Callable[[], bool]:
     """Create a checker for a shell command."""
+
     def checker() -> bool:
         return shutil.which(cmd) is not None
+
     return checker
 
 
 def check_docker() -> bool:
     """Check if Docker is available and running."""
     import subprocess
+
     try:
         result = subprocess.run(
             ["docker", "info"],
@@ -50,12 +53,14 @@ def check_docker() -> bool:
 
 def check_module(module_name: str) -> Callable[[], bool]:
     """Create a checker for a Python module."""
+
     def checker() -> bool:
         try:
             __import__(module_name)
             return True
         except ImportError:
             return False
+
     return checker
 
 
@@ -69,7 +74,6 @@ DEPENDENCIES: list[Dependency] = [
         install_hint="Download from https://python.org",
         category="core",
     ),
-
     # Security tools (optional but recommended)
     Dependency(
         name="nmap",
@@ -127,7 +131,6 @@ DEPENDENCIES: list[Dependency] = [
         install_hint="go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
         category="vuln",
     ),
-
     # Docker (for MCP servers)
     Dependency(
         name="docker",
@@ -136,7 +139,6 @@ DEPENDENCIES: list[Dependency] = [
         install_hint="Install Docker Desktop or docker-ce",
         category="mcp",
     ),
-
     # Optional Python packages
     Dependency(
         name="weasyprint (PDF reports)",
@@ -214,7 +216,17 @@ class DependencyChecker:
         table.add_column("Category", style="dim")
         table.add_column("Install Hint", style="dim")
 
-        category_order = ["core", "recon", "enum", "exploit", "vuln", "bruteforce", "network", "mcp", "reporting"]
+        category_order = [
+            "core",
+            "recon",
+            "enum",
+            "exploit",
+            "vuln",
+            "bruteforce",
+            "network",
+            "mcp",
+            "reporting",
+        ]
 
         for category in category_order:
             if category not in categories:

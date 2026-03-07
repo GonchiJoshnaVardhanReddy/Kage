@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from kage.ai.base import (
     BaseLLMProvider,
@@ -58,7 +61,8 @@ class OpenAIProvider(BaseLLMProvider):
             client = await self._get_client()
             response = await client.get("/models")
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug("OpenAI connection check failed: %s", e)
             return False
 
     async def list_models(self) -> list[str]:
@@ -69,8 +73,8 @@ class OpenAIProvider(BaseLLMProvider):
             if response.status_code == 200:
                 data = response.json()
                 return [m["id"] for m in data.get("data", [])]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to list OpenAI models: %s", e)
         return []
 
     def _build_request_body(

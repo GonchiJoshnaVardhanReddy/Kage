@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from kage.utils import utcnow
+
 
 @dataclass
 class ExecutionResult:
@@ -41,7 +43,7 @@ class StreamingOutput:
 
     text: str
     stream: str  # "stdout" or "stderr"
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utcnow)
 
 
 class BaseExecutor(ABC):
@@ -94,8 +96,7 @@ class BaseExecutor(ABC):
         """Execute with callbacks for streaming output."""
         stdout_parts = []
         stderr_parts = []
-        started_at = datetime.utcnow()
-
+        started_at = utcnow()
         async for chunk in self.execute_streaming(command, timeout, working_dir):
             if chunk.stream == "stdout":
                 stdout_parts.append(chunk.text)
@@ -114,7 +115,7 @@ class BaseExecutor(ABC):
             stdout="".join(stdout_parts),
             stderr="".join(stderr_parts),
             started_at=started_at,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
             environment=self.environment_name,
             working_dir=working_dir or self.working_dir,
         )

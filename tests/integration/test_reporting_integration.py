@@ -1,19 +1,20 @@
 """Integration tests for reporting workflow."""
 
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from kage.core.models import (
-    Session,
-    Finding,
-    Severity,
     Command,
     CommandStatus,
-    Target,
+    Finding,
     Scope,
+    Session,
+    Severity,
+    Target,
 )
-from kage.reporting import ReportExporter, ReportEngine, FindingStats
+from kage.reporting import FindingStats, ReportEngine, ReportExporter
 
 
 class TestReportingWorkflow:
@@ -73,15 +74,13 @@ class TestReportingWorkflow:
         """Test complete markdown export workflow."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.md"
-            
+
             exporter = ReportExporter()
-            result = await exporter.export(
-                complete_session, output_path, "markdown"
-            )
-            
+            result = await exporter.export(complete_session, output_path, "markdown")
+
             assert result.exists()
             content = result.read_text()
-            
+
             # Check key sections
             assert "# Penetration Testing Report" in content
             assert "Integration Test Session" in content
@@ -95,15 +94,13 @@ class TestReportingWorkflow:
         """Test complete HTML export workflow."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.html"
-            
+
             exporter = ReportExporter()
-            result = await exporter.export(
-                complete_session, output_path, "html"
-            )
-            
+            result = await exporter.export(complete_session, output_path, "html")
+
             assert result.exists()
             content = result.read_text(encoding="utf-8")
-            
+
             # Check HTML structure
             assert "<!DOCTYPE html>" in content
             assert "<title>" in content
@@ -113,7 +110,7 @@ class TestReportingWorkflow:
     def test_stats_calculation(self, complete_session):
         """Test statistics calculation from session."""
         stats = FindingStats(complete_session.findings)
-        
+
         assert stats.total == 2
         assert stats.critical == 1
         assert stats.low == 1
@@ -123,11 +120,11 @@ class TestReportingWorkflow:
     def test_engine_template_rendering(self, complete_session):
         """Test template rendering engine."""
         engine = ReportEngine()
-        
+
         # Test both formats
         md = engine.render_markdown(complete_session)
         html = engine.render_html(complete_session)
-        
+
         assert len(md) > 100
         assert len(html) > 100
         assert "SQL Injection" in md
@@ -147,12 +144,10 @@ class TestEmptySessionReport:
         """Test markdown report with no findings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "empty.md"
-            
+
             exporter = ReportExporter()
-            result = await exporter.export(
-                empty_session, output_path, "markdown"
-            )
-            
+            result = await exporter.export(empty_session, output_path, "markdown")
+
             assert result.exists()
             content = result.read_text()
             assert "No findings recorded" in content
@@ -162,12 +157,10 @@ class TestEmptySessionReport:
         """Test HTML report with no findings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "empty.html"
-            
+
             exporter = ReportExporter()
-            result = await exporter.export(
-                empty_session, output_path, "html"
-            )
-            
+            result = await exporter.export(empty_session, output_path, "html")
+
             assert result.exists()
             content = result.read_text(encoding="utf-8")
             assert "No findings recorded" in content

@@ -130,10 +130,12 @@ def hack(
     # Run hack mode
     from kage.core.hackmode import run_hack_mode
 
-    asyncio.run(run_hack_mode(
-        console=console,
-        config=config,
-        target=target,
-        scope=full_scope,
-        skip_warning=yes,
-    ))
+    asyncio.run(
+        run_hack_mode(
+            console=console,
+            config=config,
+            target=target,
+            scope=full_scope,
+            skip_warning=yes,
+        )
+    )

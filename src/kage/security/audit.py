@@ -190,7 +190,7 @@ class AuditLogger:
 
     async def verify_integrity(self) -> tuple[bool, list[str]]:
         """Verify the integrity of the audit log.
-        
+
         Returns:
             Tuple of (is_valid, list of error messages)
         """
@@ -221,9 +221,7 @@ class AuditLogger:
 
                     # Verify entry hash
                     if not entry.verify():
-                        errors.append(
-                            f"Line {line_number}: Entry hash verification failed"
-                        )
+                        errors.append(f"Line {line_number}: Entry hash verification failed")
 
                     previous_hash = entry.entry_hash
 

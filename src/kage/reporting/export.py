@@ -84,8 +84,7 @@ class ReportExporter:
             from weasyprint import HTML
         except ImportError:
             raise RuntimeError(
-                "PDF export requires weasyprint. "
-                "Install with: pip install weasyprint"
+                "PDF export requires weasyprint. Install with: pip install weasyprint"
             )
 
         # First render to HTML

@@ -31,7 +31,9 @@ class PluginManager:
         self.plugin_dirs = plugin_dirs or []
         self.sandbox_enabled = sandbox_enabled
         self._plugins: dict[str, BasePlugin] = {}
-        self._capabilities: dict[str, tuple[str, Capability]] = {}  # cap_name -> (plugin_name, capability)
+        self._capabilities: dict[
+            str, tuple[str, Capability]
+        ] = {}  # cap_name -> (plugin_name, capability)
         self._sandbox = PluginSandbox() if sandbox_enabled else None
 
     def add_plugin_dir(self, path: Path) -> None:
@@ -41,7 +43,7 @@ class PluginManager:
 
     def discover_plugins(self) -> list[tuple[Path, PluginSchema]]:
         """Discover available plugins in plugin directories.
-        
+
         Returns:
             List of (plugin_dir, schema) tuples
         """
@@ -91,21 +93,25 @@ class PluginManager:
 
             is_safe, issues = validate_plugin_code(code)
             if not is_safe:
-                raise PluginLoadError(
-                    "Plugin code validation failed:\n" + "\n".join(issues)
-                )
+                raise PluginLoadError("Plugin code validation failed:\n" + "\n".join(issues))
 
         # Load the plugin module
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"kage_plugin_{schema.name}",
-                plugin_file,
-            )
-            if spec is None or spec.loader is None:
-                raise PluginLoadError(f"Could not load plugin: {plugin_file}")
+            if self._sandbox:
+                # Use sandbox loader for runtime import restriction
+                module = self._sandbox.load_module_from_file(
+                    str(plugin_file), f"kage_plugin_{schema.name}"
+                )
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    f"kage_plugin_{schema.name}",
+                    plugin_file,
+                )
+                if spec is None or spec.loader is None:
+                    raise PluginLoadError(f"Could not load plugin: {plugin_file}")
 
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
 
         except SandboxViolation:
             raise
@@ -120,18 +126,14 @@ class PluginManager:
             )
 
         if not issubclass(plugin_class, BasePlugin):
-            raise PluginLoadError(
-                "Plugin class must inherit from BasePlugin"
-            )
+            raise PluginLoadError("Plugin class must inherit from BasePlugin")
 
         # Instantiate plugin
         plugin = plugin_class()
 
         # Verify metadata matches schema
         if plugin.name != schema.name:
-            raise PluginLoadError(
-                f"Plugin name mismatch: {plugin.name} != {schema.name}"
-            )
+            raise PluginLoadError(f"Plugin name mismatch: {plugin.name} != {schema.name}")
 
         # Setup plugin
         try:
@@ -150,7 +152,7 @@ class PluginManager:
 
     def load_all_plugins(self) -> tuple[int, list[str]]:
         """Load all discovered plugins.
-        
+
         Returns:
             Tuple of (loaded_count, list of error messages)
         """
@@ -178,7 +180,7 @@ class PluginManager:
 
     def get_capability(self, name: str) -> tuple[BasePlugin, Capability] | None:
         """Get a capability by name.
-        
+
         Returns:
             Tuple of (plugin, capability) or None
         """

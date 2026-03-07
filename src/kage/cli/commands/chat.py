@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -12,6 +11,7 @@ from rich.panel import Panel
 from kage.ai.providers import create_provider
 from kage.core.conversation import ConversationManager
 from kage.core.models import Command, CommandStatus, Session, Target
+from kage.utils import utcnow
 
 if TYPE_CHECKING:
     from kage.persistence.config import KageConfig
@@ -71,7 +71,9 @@ class ChatSession:
             self.session = loaded
             self._resumed = True
             self.console.print(f"[success]Resumed session: {self.session.id[:8]}[/success]")
-            self.console.print(f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]")
+            self.console.print(
+                f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]"
+            )
             return True
 
         self.console.print(f"[warning]Session not found: {session_id}[/warning]")
@@ -164,6 +166,11 @@ class ChatSession:
         "saves": "List all saved sessions",
         "export": "Export session to file",
         "import": "Import a session from file",
+        "read": "Read a file (use: /read <path>)",
+        "write": "Write content to file (use: /write <path> <content>)",
+        "edit": "Edit a file (use: /edit <path>)",
+        "create": "Create a new file (use: /create <path>)",
+        "ls": "List directory contents (use: /ls [path])",
     }
 
     def _setup_completer(self) -> None:
@@ -178,7 +185,11 @@ class ChatSession:
                 return options[state] if state < len(options) else None
 
             readline.set_completer(completer)
-            readline.parse_and_bind("tab: complete")
+            # macOS uses libedit which needs different binding
+            if "libedit" in (readline.__doc__ or ""):
+                readline.parse_and_bind("bind ^I rl_complete")
+            else:
+                readline.parse_and_bind("tab: complete")
         except ImportError:
             pass  # readline not available on Windows
 
@@ -213,9 +224,33 @@ class ChatSession:
 
         # Check for exact command match first
         exact_commands = [
-            "exit", "quit", "q", "help", "clear", "scope", "safe", "safemode",
-            "findings", "history", "status", "run", "commands", "save", "load",
-            "saves", "export", "import", "model", "mcp", "hacker", "hack",
+            "exit",
+            "quit",
+            "q",
+            "help",
+            "clear",
+            "scope",
+            "safe",
+            "safemode",
+            "findings",
+            "history",
+            "status",
+            "run",
+            "commands",
+            "save",
+            "load",
+            "saves",
+            "export",
+            "import",
+            "model",
+            "mcp",
+            "hacker",
+            "hack",
+            "read",
+            "write",
+            "edit",
+            "create",
+            "ls",
         ]
 
         if cmd not in exact_commands:
@@ -287,6 +322,37 @@ class ChatSession:
         elif cmd == "mcp":
             self._manage_mcp()
 
+        elif cmd == "read":
+            if args:
+                self._read_file(args)
+            else:
+                self.console.print("[muted]Usage: /read <path>[/muted]")
+
+        elif cmd == "write":
+            if args:
+                parts_w = args.split(maxsplit=1)
+                if len(parts_w) == 2:
+                    self._write_file(parts_w[0], parts_w[1])
+                else:
+                    self.console.print("[muted]Usage: /write <path> <content>[/muted]")
+            else:
+                self.console.print("[muted]Usage: /write <path> <content>[/muted]")
+
+        elif cmd == "edit":
+            if args:
+                self._edit_file(args)
+            else:
+                self.console.print("[muted]Usage: /edit <path>[/muted]")
+
+        elif cmd == "create":
+            if args:
+                self._create_file(args)
+            else:
+                self.console.print("[muted]Usage: /create <path>[/muted]")
+
+        elif cmd == "ls":
+            self._list_directory(args if args else ".")
+
         elif cmd in ("hacker", "hack"):
             self._enter_hacker_mode()
             return False  # Exit chat loop to enter hack mode
@@ -329,6 +395,14 @@ class ChatSession:
 [command]/commands[/command]      - Show pending commands
 [command]/run[/command]           - Execute pending commands
 [command]/history[/command]       - Show command history
+
+[header]File Operations[/header]
+
+[command]/read <path>[/command]   - Read and display a file
+[command]/write <path> <text>[/command] - Write text to a file
+[command]/edit <path>[/command]   - Interactive file editor
+[command]/create <path>[/command] - Create a new file
+[command]/ls [path][/command]     - List directory contents
 
 [header]Tips[/header]
 
@@ -461,8 +535,12 @@ class ChatSession:
 
         if loaded:
             self.session = loaded
-            self.console.print(f"[success]✓ Loaded session: {loaded.name or loaded.id[:8]}[/success]")
-            self.console.print(f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]")
+            self.console.print(
+                f"[success]✓ Loaded session: {loaded.name or loaded.id[:8]}[/success]"
+            )
+            self.console.print(
+                f"[muted]Messages: {len(self.session.messages)}, Commands: {len(self.session.commands)}[/muted]"
+            )
 
             # Reinitialize conversation with loaded session
             if self.conversation:
@@ -573,6 +651,257 @@ class ChatSession:
         except Exception as e:
             self.console.print(f"[error]Failed to import session: {e}[/error]")
 
+    def _read_file(self, path_str: str) -> None:
+        """Read and display a file's contents."""
+        from pathlib import Path
+
+        file_path = Path(path_str).expanduser().resolve()
+        if not file_path.exists():
+            self.console.print(f"[error]File not found: {file_path}[/error]")
+            return
+        if not file_path.is_file():
+            self.console.print(f"[error]Not a file: {file_path}[/error]")
+            return
+
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            from rich.syntax import Syntax
+
+            ext_map = {
+                ".py": "python",
+                ".js": "javascript",
+                ".ts": "typescript",
+                ".sh": "bash",
+                ".yaml": "yaml",
+                ".yml": "yaml",
+                ".json": "json",
+                ".md": "markdown",
+                ".html": "html",
+                ".css": "css",
+                ".xml": "xml",
+                ".sql": "sql",
+                ".rb": "ruby",
+                ".go": "go",
+                ".rs": "rust",
+                ".c": "c",
+                ".cpp": "cpp",
+                ".h": "c",
+                ".java": "java",
+                ".toml": "toml",
+                ".ini": "ini",
+                ".cfg": "ini",
+                ".txt": "text",
+                ".log": "text",
+                ".conf": "text",
+            }
+            lang = ext_map.get(file_path.suffix.lower(), "text")
+            syntax = Syntax(
+                content,
+                lang,
+                theme="monokai",
+                line_numbers=True,
+                word_wrap=True,
+            )
+            self.console.print(Panel(syntax, title=f"📄 {file_path.name}", border_style="cyan"))
+            self.console.print(
+                f"[muted]{len(content)} bytes, {content.count(chr(10)) + 1} lines[/muted]"
+            )
+        except Exception as e:
+            self.console.print(f"[error]Failed to read file: {e}[/error]")
+
+    def _write_file(self, path_str: str, content: str) -> None:
+        """Write content to a file."""
+        from pathlib import Path
+
+        file_path = Path(path_str).expanduser().resolve()
+
+        if file_path.exists():
+            self.console.print(f"[warning]File exists: {file_path}[/warning]")
+            confirm = self.console.input("[warning]Overwrite? (y/N): [/warning]").strip().lower()
+            if confirm != "y":
+                self.console.print("[muted]Write cancelled.[/muted]")
+                return
+
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            content = content.replace("\\n", "\n").replace("\\t", "\t")
+            file_path.write_text(content, encoding="utf-8")
+            self.console.print(f"[success]Written to: {file_path}[/success]")
+            self.console.print(f"[muted]{len(content)} bytes written[/muted]")
+        except Exception as e:
+            self.console.print(f"[error]Failed to write file: {e}[/error]")
+
+    def _edit_file(self, path_str: str) -> None:
+        """Open a file for interactive editing (append/replace line)."""
+        from pathlib import Path
+
+        file_path = Path(path_str).expanduser().resolve()
+        if not file_path.exists():
+            self.console.print(f"[error]File not found: {file_path}[/error]")
+            return
+
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+            from rich.syntax import Syntax
+
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            syntax = Syntax(content, "text", line_numbers=True, theme="monokai")
+            self.console.print(
+                Panel(syntax, title=f"✏️ Editing: {file_path.name}", border_style="yellow")
+            )
+
+            self.console.print()
+            self.console.print("[header]Edit Options:[/header]")
+            self.console.print("  [command]a[/command]  - Append a line at the end")
+            self.console.print("  [command]r <n>[/command] - Replace line number n")
+            self.console.print("  [command]d <n>[/command] - Delete line number n")
+            self.console.print("  [command]i <n>[/command] - Insert before line number n")
+            self.console.print("  [command]q[/command]  - Save and quit")
+            self.console.print("  [command]x[/command]  - Quit without saving")
+            self.console.print()
+
+            modified = False
+            while True:
+                action = self.console.input("[yellow]edit>[/yellow] ").strip()
+                if not action:
+                    continue
+
+                if action.lower() == "q":
+                    if modified:
+                        file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        self.console.print(f"[success]Saved: {file_path}[/success]")
+                    break
+                elif action.lower() == "x":
+                    self.console.print("[muted]Discarded changes.[/muted]")
+                    break
+                elif action.lower() == "a":
+                    new_line = self.console.input("[cyan]new line>[/cyan] ")
+                    lines.append(new_line)
+                    modified = True
+                    self.console.print(f"[muted]Added line {len(lines)}[/muted]")
+                elif action.lower().startswith("r "):
+                    try:
+                        n = int(action.split()[1]) - 1
+                        if 0 <= n < len(lines):
+                            self.console.print(f"[muted]Current: {lines[n]}[/muted]")
+                            new_text = self.console.input("[cyan]new text>[/cyan] ")
+                            lines[n] = new_text
+                            modified = True
+                            self.console.print(f"[muted]Replaced line {n + 1}[/muted]")
+                        else:
+                            self.console.print(
+                                f"[error]Line {n + 1} out of range (1-{len(lines)})[/error]"
+                            )
+                    except (ValueError, IndexError):
+                        self.console.print("[error]Usage: r <line_number>[/error]")
+                elif action.lower().startswith("d "):
+                    try:
+                        n = int(action.split()[1]) - 1
+                        if 0 <= n < len(lines):
+                            removed = lines.pop(n)
+                            modified = True
+                            self.console.print(f"[muted]Deleted: {removed}[/muted]")
+                        else:
+                            self.console.print(f"[error]Line {n + 1} out of range[/error]")
+                    except (ValueError, IndexError):
+                        self.console.print("[error]Usage: d <line_number>[/error]")
+                elif action.lower().startswith("i "):
+                    try:
+                        n = int(action.split()[1]) - 1
+                        if 0 <= n <= len(lines):
+                            new_line = self.console.input("[cyan]new line>[/cyan] ")
+                            lines.insert(n, new_line)
+                            modified = True
+                            self.console.print(f"[muted]Inserted at line {n + 1}[/muted]")
+                        else:
+                            self.console.print("[error]Position out of range[/error]")
+                    except (ValueError, IndexError):
+                        self.console.print("[error]Usage: i <line_number>[/error]")
+                else:
+                    self.console.print("[muted]Unknown action. Use a/r/d/i/q/x[/muted]")
+
+        except Exception as e:
+            self.console.print(f"[error]Failed to edit file: {e}[/error]")
+
+    def _create_file(self, path_str: str) -> None:
+        """Create a new file with interactive content input."""
+        from pathlib import Path
+
+        file_path = Path(path_str).expanduser().resolve()
+        if file_path.exists():
+            self.console.print(f"[error]File already exists: {file_path}[/error]")
+            self.console.print("[muted]Use /edit to modify or /write to overwrite.[/muted]")
+            return
+
+        self.console.print(f"[info]Creating: {file_path}[/info]")
+        self.console.print(
+            "[muted]Enter content (type ':done' on a new line to finish, ':cancel' to abort):[/muted]"
+        )
+
+        lines = []
+        while True:
+            line = self.console.input("[green]│[/green] ")
+            if line.strip() == ":done":
+                break
+            if line.strip() == ":cancel":
+                self.console.print("[muted]File creation cancelled.[/muted]")
+                return
+            lines.append(line)
+
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            content = "\n".join(lines) + "\n"
+            file_path.write_text(content, encoding="utf-8")
+            self.console.print(f"[success]Created: {file_path}[/success]")
+            self.console.print(f"[muted]{len(lines)} lines, {len(content)} bytes[/muted]")
+        except Exception as e:
+            self.console.print(f"[error]Failed to create file: {e}[/error]")
+
+    def _list_directory(self, path_str: str) -> None:
+        """List contents of a directory."""
+        from pathlib import Path
+
+        from rich.table import Table
+
+        dir_path = Path(path_str).expanduser().resolve()
+        if not dir_path.exists():
+            self.console.print(f"[error]Path not found: {dir_path}[/error]")
+            return
+        if not dir_path.is_dir():
+            self.console.print(f"[error]Not a directory: {dir_path}[/error]")
+            return
+
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+
+            table = Table(title=f"📁 {dir_path}", header_style="table.header")
+            table.add_column("Type", style="muted", width=6)
+            table.add_column("Name", style="info")
+            table.add_column("Size", style="muted", justify="right")
+
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_dir():
+                    table.add_row("📁 dir", f"[bold]{entry.name}/[/bold]", "-")
+                else:
+                    size = entry.stat().st_size
+                    if size < 1024:
+                        size_str = f"{size} B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{size / (1024 * 1024):.1f} MB"
+                    table.add_row("📄 file", entry.name, size_str)
+
+            self.console.print(table)
+            self.console.print(f"[muted]{len(entries)} items[/muted]")
+        except PermissionError:
+            self.console.print(f"[error]Permission denied: {dir_path}[/error]")
+        except Exception as e:
+            self.console.print(f"[error]Failed to list directory: {e}[/error]")
+
     def _show_easter_egg(self) -> None:
         """Display the hidden easter egg."""
         joker_card = """
@@ -593,8 +922,8 @@ class ChatSession:
         self.console.print(joker_card)
         self.console.print()
         self.console.print(
-            "[italic cyan]\"Jack of all trades. Master of none, "
-            "but oftentimes better than a master of one.\"[/italic cyan]"
+            '[italic cyan]"Jack of all trades. Master of none, '
+            'but oftentimes better than a master of one."[/italic cyan]'
         )
         self.console.print()
 
@@ -717,9 +1046,7 @@ class ChatSession:
                     else:
                         model = model_choice
                 else:
-                    model = Prompt.ask(
-                        "[bold]Model name[/bold]", default="local-model"
-                    )
+                    model = Prompt.ask("[bold]Model name[/bold]", default="local-model")
             else:
                 self.console.print("[error]Could not connect to LM Studio[/error]")
                 return
@@ -782,7 +1109,9 @@ class ChatSession:
             )
             if result.returncode != 0:
                 self.console.print("[error]Docker not found or not running[/error]")
-                self.console.print("[muted]Install Docker: https://docs.docker.com/get-docker/[/muted]")
+                self.console.print(
+                    "[muted]Install Docker: https://docs.docker.com/get-docker/[/muted]"
+                )
                 return
             self.console.print("[success]✓ Docker available[/success]")
         except Exception:
@@ -798,13 +1127,22 @@ class ChatSession:
         self.console.print("  [cyan]5[/cyan] - View configured servers")
         self.console.print()
 
-        choice = Prompt.ask("[bold]Select option[/bold]", choices=["1", "2", "3", "4", "5"], default="1")
+        choice = Prompt.ask(
+            "[bold]Select option[/bold]", choices=["1", "2", "3", "4", "5"], default="1"
+        )
 
         if choice == "1":
             # List running containers
             self.console.print()
             result = subprocess.run(
-                ["docker", "ps", "--filter", "label=mcp-server", "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"],
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    "label=mcp-server",
+                    "--format",
+                    "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -819,7 +1157,11 @@ class ChatSession:
                     text=True,
                 )
                 self.console.print("[header]Running Docker Containers:[/header]")
-                self.console.print(result.stdout if result.stdout.strip() else "[muted]No containers running[/muted]")
+                self.console.print(
+                    result.stdout
+                    if result.stdout.strip()
+                    else "[muted]No containers running[/muted]"
+                )
 
         elif choice == "2":
             # Start an MCP server
@@ -832,7 +1174,9 @@ class ChatSession:
             self.console.print("  [cyan]5[/cyan] - Custom image")
             self.console.print()
 
-            server_choice = Prompt.ask("[bold]Select server[/bold]", choices=["1", "2", "3", "4", "5"], default="1")
+            server_choice = Prompt.ask(
+                "[bold]Select server[/bold]", choices=["1", "2", "3", "4", "5"], default="1"
+            )
 
             images = {
                 "1": "mcp/filesystem",
@@ -846,13 +1190,24 @@ class ChatSession:
             else:
                 image = images.get(server_choice, "mcp/filesystem")
 
-            container_name = Prompt.ask("[bold]Container name[/bold]", default=f"kage-{image.split('/')[-1]}")
+            container_name = Prompt.ask(
+                "[bold]Container name[/bold]", default=f"kage-{image.split('/')[-1]}"
+            )
 
             self.console.print()
             self.console.print(f"[info]Starting {image}...[/info]")
 
             result = subprocess.run(
-                ["docker", "run", "-d", "--name", container_name, "--label", "mcp-server=true", image],
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    container_name,
+                    "--label",
+                    "mcp-server=true",
+                    image,
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -863,6 +1218,7 @@ class ChatSession:
                 # Add to config
                 if Confirm.ask("[bold]Add to Kage config?[/bold]", default=True):
                     from kage.persistence.config import MCPServerConfig
+
                     mcp_config = MCPServerConfig(
                         name=container_name,
                         transport="docker",
@@ -970,13 +1326,15 @@ class ChatSession:
         from kage.core.hackmode import run_hack_mode
 
         self.console.clear()
-        asyncio.run(run_hack_mode(
-            console=self.console,
-            config=self.config,
-            target=target,
-            scope=scope,
-            skip_warning=False,
-        ))
+        asyncio.run(
+            run_hack_mode(
+                console=self.console,
+                config=self.config,
+                target=target,
+                scope=scope,
+                skip_warning=False,
+            )
+        )
 
     def _run_pending_commands(self) -> None:
         """Execute pending commands with approval workflow."""
@@ -1046,7 +1404,7 @@ class ChatSession:
         from kage.executor import LocalExecutor
 
         cmd.status = CommandStatus.RUNNING
-        cmd.started_at = datetime.utcnow()
+        cmd.started_at = utcnow()
 
         self.console.print("[status.running]Running...[/status.running]")
 
@@ -1059,7 +1417,7 @@ class ChatSession:
             cmd.stdout = result.stdout
             cmd.stderr = result.stderr
             cmd.status = CommandStatus.COMPLETED if not result.timed_out else CommandStatus.TIMEOUT
-            cmd.completed_at = datetime.utcnow()
+            cmd.completed_at = utcnow()
 
             # Display output
             if result.stdout:
@@ -1093,7 +1451,7 @@ class ChatSession:
         except Exception as e:
             cmd.status = CommandStatus.FAILED
             cmd.stderr = str(e)
-            cmd.completed_at = datetime.utcnow()
+            cmd.completed_at = utcnow()
             self.console.print(f"[error]Failed: {e}[/error]")
 
         # Add to session history
@@ -1121,7 +1479,8 @@ class ChatSession:
                 pass
             self.console.print(f"[warning]Retry {attempt + 1}/3...[/warning]")
             import time
-            time.sleep(2 ** attempt)
+
+            time.sleep(2**attempt)
         return False
 
     async def _process_message(self, user_input: str) -> None:
@@ -1184,10 +1543,14 @@ class ChatSession:
             try:
                 # Get user input with styled prompt box
                 self.console.print()
-                self.console.print("[cyan]╭─[/cyan][bold cyan] kage [/bold cyan][cyan]─────────────────────────────────────────────────────────[/cyan]")
+                self.console.print(
+                    "[cyan]╭─[/cyan][bold cyan] kage [/bold cyan][cyan]─────────────────────────────────────────────────────────[/cyan]"
+                )
                 self.console.print("[cyan]│[/cyan]")
                 user_input = self.console.input("[cyan]│[/cyan] [prompt.arrow]>[/prompt.arrow] ")
-                self.console.print("[cyan]╰──────────────────────────────────────────────────────────────────[/cyan]")
+                self.console.print(
+                    "[cyan]╰──────────────────────────────────────────────────────────────────[/cyan]"
+                )
 
                 if not user_input.strip():
                     continue

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from kage.ai.base import (
     BaseLLMProvider,
@@ -53,7 +56,8 @@ class OllamaProvider(BaseLLMProvider):
             client = await self._get_client()
             response = await client.get("/api/tags")
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug("Ollama connection check failed: %s", e)
             return False
 
     async def list_models(self) -> list[str]:
@@ -64,8 +68,8 @@ class OllamaProvider(BaseLLMProvider):
             if response.status_code == 200:
                 data = response.json()
                 return [m["name"] for m in data.get("models", [])]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to list Ollama models: %s", e)
         return []
 
     def _build_request_body(
@@ -118,8 +122,7 @@ class OllamaProvider(BaseLLMProvider):
             usage={
                 "prompt_tokens": data.get("prompt_eval_count", 0),
                 "completion_tokens": data.get("eval_count", 0),
-                "total_tokens": data.get("prompt_eval_count", 0)
-                + data.get("eval_count", 0),
+                "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
             },
             raw=data,
         )

@@ -55,7 +55,7 @@ class ApprovalWorkflow:
 
     async def evaluate(self, command: Command) -> ApprovalResult:
         """Evaluate a command through the approval workflow.
-        
+
         Returns ApprovalResult with decision and any warnings/blocks.
         """
         warnings = []
@@ -95,9 +95,7 @@ class ApprovalWorkflow:
 
             for result in scope_results:
                 if not result.in_scope:
-                    warnings.append(
-                        f"🎯 OUT OF SCOPE: {result.target_checked} - {result.reason}"
-                    )
+                    warnings.append(f"🎯 OUT OF SCOPE: {result.target_checked} - {result.reason}")
 
                     if self.audit_logger:
                         await self.audit_logger.log_scope_violation(
@@ -107,6 +105,17 @@ class ApprovalWorkflow:
                         )
 
         # Step 3: Determine decision
+        # DANGEROUS commands always require confirmation, even if require_approval is False
+        if safe_result.danger_level == DangerLevel.DANGEROUS:
+            return ApprovalResult(
+                decision=ApprovalDecision.NEEDS_CONFIRMATION,
+                command=command,
+                safe_mode_result=safe_result,
+                scope_results=scope_results,
+                warnings=warnings,
+                reason="Dangerous commands always require explicit approval",
+            )
+
         if warnings and self.require_approval:
             return ApprovalResult(
                 decision=ApprovalDecision.NEEDS_CONFIRMATION,
@@ -151,6 +160,27 @@ class ApprovalWorkflow:
         """Update safe mode setting."""
         self.safe_mode_filter.enabled = enabled
 
+    async def update_safe_mode_audited(self, enabled: bool) -> None:
+        """Update safe mode setting with audit logging."""
+        old_state = self.safe_mode_filter.enabled
+        self.safe_mode_filter.enabled = enabled
+        if self.audit_logger and old_state != enabled:
+            await self.audit_logger.log(
+                "safe_mode_changed",
+                {"old_state": old_state, "new_state": enabled},
+            )
+
     def update_scope(self, scope: Scope) -> None:
         """Update the scope validator."""
         self.scope_validator = ScopeValidator(scope)
+
+    async def update_scope_audited(self, scope: Scope) -> None:
+        """Update the scope validator with audit logging."""
+        old_targets = [t.value for t in self.scope_validator.scope.targets]
+        self.scope_validator = ScopeValidator(scope)
+        new_targets = [t.value for t in scope.targets]
+        if self.audit_logger:
+            await self.audit_logger.log(
+                "scope_changed",
+                {"old_targets": old_targets, "new_targets": new_targets},
+            )

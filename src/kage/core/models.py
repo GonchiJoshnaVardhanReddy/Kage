@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from kage.utils import utcnow
 
 
 class Severity(str, Enum):
@@ -57,7 +60,7 @@ class Message(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     role: MessageRole
     content: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -71,7 +74,7 @@ class Command(BaseModel):
     status: CommandStatus = CommandStatus.PENDING
     working_dir: str | None = None
     timeout: int = 300
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     exit_code: int | None = None
@@ -95,7 +98,7 @@ class Finding(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
     target: str | None = None
-    discovered_at: datetime = Field(default_factory=datetime.utcnow)
+    discovered_at: datetime = Field(default_factory=utcnow)
     auto_detected: bool = False
     verified: bool = False
 
@@ -107,7 +110,7 @@ class Target(BaseModel):
     value: str
     target_type: str  # ip, cidr, domain, url
     notes: str | None = None
-    added_at: datetime = Field(default_factory=datetime.utcnow)
+    added_at: datetime = Field(default_factory=utcnow)
 
 
 class Scope(BaseModel):
@@ -116,7 +119,7 @@ class Scope(BaseModel):
     targets: list[Target] = Field(default_factory=list)
     excluded: list[str] = Field(default_factory=list)
     notes: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class Session(BaseModel):
@@ -124,8 +127,8 @@ class Session(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
     scope: Scope = Field(default_factory=Scope)
     messages: list[Message] = Field(default_factory=list)
     commands: list[Command] = Field(default_factory=list)
@@ -139,7 +142,7 @@ class AuditEntry(BaseModel):
     """A single audit log entry with hash chain."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
     session_id: str
     action: str
     details: dict[str, Any] = Field(default_factory=dict)
@@ -148,7 +151,9 @@ class AuditEntry(BaseModel):
 
     def compute_hash(self) -> str:
         """Compute hash for this entry."""
-        data = f"{self.timestamp.isoformat()}|{self.session_id}|{self.action}|{self.details}|{self.previous_hash or ''}"
+        # Use json.dumps with sort_keys for deterministic dict serialization
+        details_str = json.dumps(self.details, sort_keys=True, default=str)
+        data = f"{self.timestamp.isoformat()}|{self.session_id}|{self.action}|{details_str}|{self.previous_hash or ''}"
         return hashlib.sha256(data.encode()).hexdigest()
 
     def finalize(self, previous_hash: str | None = None) -> None:

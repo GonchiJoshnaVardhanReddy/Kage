@@ -67,6 +67,7 @@ def main_callback(
 def setup() -> None:
     """Run the first-time setup wizard."""
     from kage.cli.wizard import run_setup_wizard
+
     run_setup_wizard(console)
 
 
@@ -165,7 +166,9 @@ def launch(
             console.print(f"[info]  Using model: {selected_model}[/info]")
         else:
             if provider == "ollama":
-                console.print("[warning]  No models found. Pull one: ollama pull llama3.1[/warning]")
+                console.print(
+                    "[warning]  No models found. Pull one: ollama pull llama3.1[/warning]"
+                )
                 raise typer.Exit(1)
             elif provider == "lmstudio":
                 selected_model = "local-model"
@@ -196,19 +199,23 @@ def launch(
     console.print(KAGE_LOGO)
 
     from kage.cli.ui.panels import create_status_panel
-    console.print(create_status_panel(
-        safe_mode=config.security.safe_mode,
-        scope=None,
-        session_id=None,
-        provider=config.llm.provider,
-        model=config.llm.model,
-    ))
+
+    console.print(
+        create_status_panel(
+            safe_mode=config.security.safe_mode,
+            scope=None,
+            session_id=None,
+            provider=config.llm.provider,
+            model=config.llm.model,
+        )
+    )
 
     console.print()
     console.print("[info]Type your message or [command]/help[/command] for commands.[/info]")
     console.print("[muted]Press Ctrl+C to exit.[/muted]")
 
     from kage.cli.commands.chat import chat_loop
+
     chat_loop(console, config, session_id=None, scope=None)
 
 
@@ -250,8 +257,10 @@ def chat(
     # Check first run
     if config.first_run:
         from kage.cli.ui.prompts import prompt_first_run
+
         if prompt_first_run(console):
             from kage.cli.wizard import run_setup_wizard
+
             config = run_setup_wizard(console)
         else:
             config.first_run = False
@@ -270,13 +279,16 @@ def chat(
     console.print(KAGE_LOGO)
 
     from kage.cli.ui.panels import create_status_panel
-    console.print(create_status_panel(
-        safe_mode=config.security.safe_mode,
-        scope=None,  # TODO: Load from session or parse from --scope
-        session_id=session_id,
-        provider=config.llm.provider,
-        model=config.llm.model,
-    ))
+
+    console.print(
+        create_status_panel(
+            safe_mode=config.security.safe_mode,
+            scope=None,  # Scope is parsed later in chat_loop from --scope arg
+            session_id=session_id,
+            provider=config.llm.provider,
+            model=config.llm.model,
+        )
+    )
 
     console.print()
     console.print("[info]Type your message or [command]/help[/command] for commands.[/info]")
@@ -284,6 +296,7 @@ def chat(
 
     # Start chat loop
     from kage.cli.commands.chat import chat_loop
+
     chat_loop(console, config, session_id, scope)
 
 
@@ -310,6 +323,7 @@ def config_cmd(
 
     if show or (not edit and not reset):
         import yaml
+
         console.print("[header]Current Configuration[/header]")
         console.print()
         console.print(yaml.dump(config.model_dump(mode="json"), default_flow_style=False))
@@ -318,6 +332,7 @@ def config_cmd(
 
     if reset:
         from rich.prompt import Confirm
+
         if Confirm.ask("[warning]Reset configuration to defaults?[/warning]", default=False):
             new_config = KageConfig()
             new_config.save()
@@ -360,6 +375,7 @@ def session(
             return
 
         from rich.table import Table
+
         table = Table(title="Sessions", header_style="table.header")
         table.add_column("ID", style="highlight")
         table.add_column("Updated", style="muted")
@@ -396,6 +412,7 @@ def session(
         console.print(KAGE_LOGO)
 
         from kage.cli.commands.chat import chat_loop
+
         chat_loop(console, config, session_id=session_id, scope=None)
 
     elif action == "export":
@@ -404,6 +421,7 @@ def session(
             raise typer.Exit(1)
 
         from pathlib import Path
+
         output_path = Path(output) if output else Path(f"session_{session_id[:8]}.md")
         fmt = "markdown" if output_path.suffix == ".md" else "json"
 
@@ -420,6 +438,7 @@ def session(
             raise typer.Exit(1)
 
         from rich.prompt import Confirm
+
         if Confirm.ask(f"[warning]Delete session {session_id[:8]}?[/warning]", default=False):
             success = asyncio.run(storage.delete(session_id))
             if success:
@@ -502,17 +521,18 @@ def report(
 
         try:
             exporter = ReportExporter()
-            result_path = asyncio.run(
-                exporter.export(session, output_path, format, template)
-            )
+            result_path = asyncio.run(exporter.export(session, output_path, format, template))
             console.print(f"[success]Report generated: {result_path}[/success]")
 
             # Show summary
             from kage.reporting import FindingStats
+
             stats = FindingStats(session.findings)
             console.print()
             console.print(f"[muted]Session: {session.id[:8]}[/muted]")
-            console.print(f"[muted]Findings: {stats.total} (Critical: {stats.critical}, High: {stats.high}, Medium: {stats.medium})[/muted]")
+            console.print(
+                f"[muted]Findings: {stats.total} (Critical: {stats.critical}, High: {stats.high}, Medium: {stats.medium})[/muted]"
+            )
             console.print(f"[muted]Risk Rating: {stats.risk_rating}[/muted]")
 
         except Exception as e:
@@ -522,6 +542,7 @@ def report(
     elif action == "list":
         # List available templates
         from kage.reporting import ReportEngine
+
         engine = ReportEngine()
         templates = engine.list_templates()
 
@@ -549,6 +570,7 @@ def report(
 
         # Open in default browser/viewer
         import webbrowser
+
         webbrowser.open(str(report_path.absolute()))
         console.print(f"[success]Opened: {report_path}[/success]")
 

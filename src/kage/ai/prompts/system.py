@@ -129,9 +129,27 @@ def build_system_prompt(
     safe_mode: bool = True,
     scope_targets: list[str] | None = None,
     additional_context: str | None = None,
+    provider_name: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     """Build the system prompt with context."""
     prompt = SYSTEM_PROMPT
+
+    # Add identity/self-awareness block
+    identity_parts = []
+    if provider_name:
+        identity_parts.append(f"provider: {provider_name}")
+    if model_name:
+        identity_parts.append(f"model: {model_name}")
+    if identity_parts:
+        identity_str = ", ".join(identity_parts)
+        prompt += f"""
+
+## Identity
+You are Kage. When the user asks who you are, what you are, or anything about your identity, respond with:
+"I am Kage, your AI-powered penetration testing assistant. I am currently using {identity_str} to assist you with security assessments, bug bounty hunting, CTF challenges, and red team operations."
+Always identify yourself as Kage — never as the underlying model or provider.
+"""
 
     # Add safe mode notice
     if safe_mode:

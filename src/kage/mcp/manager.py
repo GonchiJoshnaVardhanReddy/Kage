@@ -80,6 +80,7 @@ class MCPManager:
             for config_file in path.glob("*.json"):
                 try:
                     import json
+
                     with open(config_file) as f:
                         data = json.load(f)
 
@@ -104,12 +105,14 @@ class MCPManager:
 
         for name, cmd, args in common_servers:
             if shutil.which(cmd) and not any(s.name == name for s in self.config.servers):
-                discovered.append(MCPServerConfig(
-                    name=name,
-                    transport="stdio",
-                    command=f"{cmd} {' '.join(args)}",
-                    auto_start=False,  # Don't auto-start discovered servers
-                ))
+                discovered.append(
+                    MCPServerConfig(
+                        name=name,
+                        transport="stdio",
+                        command=f"{cmd} {' '.join(args)}",
+                        auto_start=False,  # Don't auto-start discovered servers
+                    )
+                )
 
         # Add discovered servers to config (but don't overwrite existing)
         existing_names = {s.name for s in self.config.servers}

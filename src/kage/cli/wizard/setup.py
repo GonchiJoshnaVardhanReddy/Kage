@@ -120,7 +120,9 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             console.print(f"[muted]  URL tested: {llm_config.base_url}[/muted]")
             console.print()
             if not Confirm.ask("[prompt]Continue anyway?[/prompt]", default=False, console=console):
-                console.print("[warning]Setup cancelled. Start Ollama and run [command]kage setup[/command] again.[/warning]")
+                console.print(
+                    "[warning]Setup cancelled. Start Ollama and run [command]kage setup[/command] again.[/warning]"
+                )
                 return config
             llm_config.model = Prompt.ask(
                 "[prompt]Model name[/prompt]",
@@ -150,7 +152,9 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
                 else:
                     llm_config.model = model_choice
             else:
-                console.print("[warning]  No models found. Pull a model: ollama pull llama3.1[/warning]")
+                console.print(
+                    "[warning]  No models found. Pull a model: ollama pull llama3.1[/warning]"
+                )
                 llm_config.model = Prompt.ask(
                     "[prompt]Model name[/prompt]",
                     default="llama3.1",
@@ -201,11 +205,15 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
 
         if not connected:
             console.print("[error]✗ Could not connect to LM Studio![/error]")
-            console.print("[muted]  Make sure LM Studio is running with the local server enabled.[/muted]")
+            console.print(
+                "[muted]  Make sure LM Studio is running with the local server enabled.[/muted]"
+            )
             console.print(f"[muted]  URL tested: {llm_config.base_url}[/muted]")
             console.print()
             if not Confirm.ask("[prompt]Continue anyway?[/prompt]", default=False, console=console):
-                console.print("[warning]Setup cancelled. Start LM Studio server and run [command]kage setup[/command] again.[/warning]")
+                console.print(
+                    "[warning]Setup cancelled. Start LM Studio server and run [command]kage setup[/command] again.[/warning]"
+                )
                 return config
             llm_config.model = Prompt.ask(
                 "[prompt]Model name[/prompt]",
@@ -246,12 +254,15 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
             "[prompt]API Base URL[/prompt]",
             console=console,
         )
-        llm_config.api_key = Prompt.ask(
-            "[prompt]API Key (leave empty if none)[/prompt]",
-            password=True,
-            default="",
-            console=console,
-        ) or None
+        llm_config.api_key = (
+            Prompt.ask(
+                "[prompt]API Key (leave empty if none)[/prompt]",
+                password=True,
+                default="",
+                console=console,
+            )
+            or None
+        )
         llm_config.model = Prompt.ask(
             "[prompt]Model name[/prompt]",
             console=console,
@@ -294,14 +305,20 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
     summary.append("Model: ", style="subtitle")
     summary.append(f"{config.llm.model}\n", style="info")
     summary.append("Safe Mode: ", style="subtitle")
-    summary.append(f"{'Enabled' if config.security.safe_mode else 'Disabled'}\n",
-                   style="safe" if config.security.safe_mode else "unsafe")
+    summary.append(
+        f"{'Enabled' if config.security.safe_mode else 'Disabled'}\n",
+        style="safe" if config.security.safe_mode else "unsafe",
+    )
     summary.append("Require Approval: ", style="subtitle")
     summary.append(f"{'Yes' if config.security.require_approval else 'No'}\n", style="info")
     summary.append("Scope Enforcement: ", style="subtitle")
-    summary.append(f"{'Enabled' if config.security.scope_enforcement else 'Disabled'}", style="info")
+    summary.append(
+        f"{'Enabled' if config.security.scope_enforcement else 'Disabled'}", style="info"
+    )
 
-    console.print(Panel(summary, title="[panel.title]Summary[/panel.title]", border_style="panel.border"))
+    console.print(
+        Panel(summary, title="[panel.title]Summary[/panel.title]", border_style="panel.border")
+    )
     console.print()
 
     if Confirm.ask("[prompt]Save this configuration?[/prompt]", default=True, console=console):
@@ -312,7 +329,9 @@ def run_setup_wizard(console: Console | None = None) -> KageConfig:
         console.print(f"[muted]Config file: {config.get_config_path()}[/muted]")
     else:
         console.print()
-        console.print("[warning]Configuration not saved. Run [command]kage setup[/command] to try again.[/warning]")
+        console.print(
+            "[warning]Configuration not saved. Run [command]kage setup[/command] to try again.[/warning]"
+        )
 
     console.print()
     console.print("[info]Run [command]kage chat[/command] to start a session.[/info]")

@@ -126,13 +126,25 @@ class ScopeValidator:
                     reason=f"Explicitly excluded: {excluded}",
                 )
 
-        # Check against scope
+        # Check against scope patterns
         for pattern_type, pattern, original in self._compiled_patterns:
             if pattern_type == "domain" and pattern.match(domain):
                 return ScopeValidationResult(
                     in_scope=True,
                     target_checked=domain,
                     matched_scope=original,
+                )
+
+        # DNS resolution fallback: resolve domain and check if IP is in scope
+        resolved_ip = resolve_domain_to_ip(domain)
+        if resolved_ip:
+            ip_result = self.check_ip(resolved_ip)
+            if ip_result.in_scope:
+                return ScopeValidationResult(
+                    in_scope=True,
+                    target_checked=domain,
+                    matched_scope=ip_result.matched_scope,
+                    reason=f"Domain resolves to in-scope IP {resolved_ip}",
                 )
 
         return ScopeValidationResult(
@@ -187,7 +199,7 @@ class ScopeValidator:
 
     def validate_command(self, command: str) -> tuple[bool, list[ScopeValidationResult]]:
         """Validate all targets in a command against scope.
-        
+
         Returns:
             Tuple of (all_in_scope, list of validation results)
         """
@@ -205,8 +217,29 @@ class ScopeValidator:
                 result = self.check_ip(target)
             except ValueError:
                 if "/" in target:
-                    # CIDR - check base IP
-                    result = self.check_ip(target.split("/")[0])
+                    # CIDR - validate the entire network against scope
+                    try:
+                        network = ipaddress.ip_network(target, strict=False)
+                        # Check if the CIDR falls within any scoped CIDR
+                        cidr_in_scope = False
+                        matched = None
+                        for pt, pat, orig in self._compiled_patterns:
+                            if pt == "cidr" and network.subnet_of(pat):
+                                cidr_in_scope = True
+                                matched = orig
+                                break
+                            if pt == "ip" and pat in network:
+                                cidr_in_scope = True
+                                matched = orig
+                                break
+                        result = ScopeValidationResult(
+                            in_scope=cidr_in_scope,
+                            target_checked=target,
+                            matched_scope=matched,
+                            reason=None if cidr_in_scope else "CIDR range extends outside scope",
+                        )
+                    except ValueError:
+                        result = self.check_ip(target.split("/")[0])
                 else:
                     result = self.check_domain(target)
 

@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import subprocess
 from collections.abc import AsyncIterator
-from datetime import datetime
 
 from kage.executor.base import BaseExecutor, ExecutionResult, StreamingOutput
+from kage.utils import utcnow
+
+# Environment variables that could be abused for injection/hijacking
+_DANGEROUS_ENV_VARS = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "NODE_OPTIONS",
+        "PERL5LIB",
+        "RUBYLIB",
+    }
+)
+
+
+def sanitize_env(env: dict[str, str]) -> dict[str, str]:
+    """Filter out environment variables that could be used for injection."""
+    return {k: v for k, v in env.items() if k not in _DANGEROUS_ENV_VARS}
 
 
 class LocalExecutor(BaseExecutor):
@@ -41,13 +62,13 @@ class LocalExecutor(BaseExecutor):
         env: dict[str, str] | None = None,
     ) -> ExecutionResult:
         """Execute a command locally."""
-        started_at = datetime.utcnow()
+        started_at = utcnow()
         cwd = working_dir or self.working_dir
 
         # Merge environment variables
         run_env = os.environ.copy()
         if env:
-            run_env.update(env)
+            run_env.update(sanitize_env(env))
 
         timed_out = False
         exit_code = -1
@@ -56,12 +77,20 @@ class LocalExecutor(BaseExecutor):
 
         try:
             # Run in executor to not block
+            # Use explicit shell invocation to avoid shell=True injection
+            if os.name == "nt":
+                cmd: str | list[str] = command
+                use_shell = True
+            else:
+                cmd = [self.shell, "-c", command]
+                use_shell = False
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
-                    command,
-                    shell=True,
+                    cmd,
+                    shell=use_shell,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
@@ -87,7 +116,7 @@ class LocalExecutor(BaseExecutor):
             stdout=stdout,
             stderr=stderr,
             started_at=started_at,
-            completed_at=datetime.utcnow(),
+            completed_at=utcnow(),
             timed_out=timed_out,
             environment=self.environment_name,
             working_dir=cwd,
@@ -106,16 +135,27 @@ class LocalExecutor(BaseExecutor):
         # Merge environment variables
         run_env = os.environ.copy()
         if env:
-            run_env.update(env)
+            run_env.update(sanitize_env(env))
 
-        # Use asyncio subprocess for streaming
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=run_env,
-        )
+        # Use explicit shell invocation to avoid shell=True injection
+        if os.name == "nt":
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=run_env,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                self.shell,
+                "-c",
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=run_env,
+            )
 
         async def read_stream(stream, stream_name: str):
             """Read from a stream and yield chunks."""
@@ -192,7 +232,8 @@ class WindowsExecutor(LocalExecutor):
     ) -> ExecutionResult:
         """Execute using PowerShell if configured."""
         if self.use_powershell:
-            # Wrap command for PowerShell
-            command = f'powershell.exe -NoProfile -Command "{command}"'
+            # Use -EncodedCommand with base64 to prevent quote injection
+            encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+            command = f"powershell.exe -NoProfile -EncodedCommand {encoded}"
 
         return await super().execute(command, timeout, working_dir, env)

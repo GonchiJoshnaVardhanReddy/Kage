@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
 from typing import Any
 
 from kage.core.models import Finding, Session, Severity
+from kage.utils import utcnow
 
 
 class FindingStats:
@@ -156,7 +156,7 @@ class ReportData:
         self.stats = FindingStats(session.findings)
         self.findings_by_severity = group_findings_by_severity(session.findings)
         self.findings_sorted = sort_findings_by_severity(session.findings)
-        self.generated_at = datetime.utcnow()
+        self.generated_at = utcnow()
 
     def to_context(self) -> dict[str, Any]:
         """Convert to Jinja2 template context."""
@@ -167,21 +167,17 @@ class ReportData:
             "created_at": self.session.created_at,
             "updated_at": self.session.updated_at,
             "generated_at": self.generated_at,
-
             # Scope
             "scope": self.session.scope,
             "targets": self.session.scope.targets,
             "excluded": self.session.scope.excluded,
-
             # Findings
             "findings": self.findings_sorted,
             "findings_by_severity": self.findings_by_severity,
             "stats": self.stats.to_dict(),
-
             # Commands
             "commands": self.session.commands,
             "command_count": len(self.session.commands),
-
             # Metadata
             "safe_mode": self.session.safe_mode,
             "environment": self.session.environment.value,

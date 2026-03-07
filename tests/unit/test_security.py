@@ -3,8 +3,8 @@
 import pytest
 
 from kage.core.models import Scope, Target
+from kage.security.safemode import DangerLevel, SafeModeFilter
 from kage.security.scope import ScopeValidator
-from kage.security.safemode import SafeModeFilter, DangerLevel
 
 
 class TestScopeValidator:
@@ -27,10 +27,10 @@ class TestScopeValidator:
         """Test IP address validation."""
         result1 = validator_with_targets.check_ip("192.168.1.100")
         assert result1.in_scope is True
-        
+
         result2 = validator_with_targets.check_ip("10.0.0.1")
         assert result2.in_scope is True
-        
+
         result3 = validator_with_targets.check_ip("172.16.0.1")
         assert result3.in_scope is False
 
@@ -44,10 +44,10 @@ class TestScopeValidator:
         """Test domain validation."""
         result1 = validator_with_targets.check_domain("example.com")
         assert result1.in_scope is True
-        
+
         result2 = validator_with_targets.check_domain("sub.example.com")
         assert result2.in_scope is True
-        
+
         result3 = validator_with_targets.check_domain("other.com")
         assert result3.in_scope is False
 
@@ -99,8 +99,10 @@ class TestSafeModeFilter:
         ]
         for cmd in dangerous_commands:
             result = filter.check(cmd)
-            assert not result.allowed or result.danger_level in (DangerLevel.BLOCKED, DangerLevel.DANGEROUS), \
-                f"Command should be blocked: {cmd}"
+            assert not result.allowed or result.danger_level in (
+                DangerLevel.BLOCKED,
+                DangerLevel.DANGEROUS,
+            ), f"Command should be blocked: {cmd}"
 
     def test_disabled_filter(self):
         """Test that disabled filter allows everything."""
@@ -118,6 +120,6 @@ class TestSafeModeFilter:
         """Test getting danger level."""
         level = filter.get_danger_level("ls -la")
         assert level == DangerLevel.SAFE
-        
+
         level = filter.get_danger_level("rm -rf /")
         assert level in (DangerLevel.BLOCKED, DangerLevel.DANGEROUS)

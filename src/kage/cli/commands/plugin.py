@@ -81,20 +81,30 @@ def plugin_info(name: str = typer.Argument(..., help="Plugin name")):
             console.print(f"[yellow]Entry Point:[/yellow] {schema.entry_point}")
 
             if schema.required_tools:
-                console.print(f"[yellow]Required Tools:[/yellow] {', '.join(schema.required_tools)}")
+                console.print(
+                    f"[yellow]Required Tools:[/yellow] {', '.join(schema.required_tools)}"
+                )
 
             if schema.capabilities:
                 console.print("\n[cyan]Capabilities:[/cyan]")
                 for cap in schema.capabilities:
-                    approval = "[red]⚠ requires approval[/red]" if cap.requires_approval else "[green]✓ no approval needed[/green]"
+                    approval = (
+                        "[red]⚠ requires approval[/red]"
+                        if cap.requires_approval
+                        else "[green]✓ no approval needed[/green]"
+                    )
                     console.print(f"  • [bold]{cap.name}[/bold] - {cap.description}")
                     console.print(f"    {approval}")
 
                     if cap.parameters:
                         for param in cap.parameters:
                             req = "[red]*[/red]" if param.get("required", True) else ""
-                            default = f" (default: {param.get('default')})" if "default" in param else ""
-                            console.print(f"      - {param['name']}{req}: {param.get('description', '')}{default}")
+                            default = (
+                                f" (default: {param.get('default')})" if "default" in param else ""
+                            )
+                            console.print(
+                                f"      - {param['name']}{req}: {param.get('description', '')}{default}"
+                            )
 
             return
 
@@ -181,7 +191,8 @@ def create_plugin(
     name: str = typer.Argument(..., help="Plugin name"),
     output_dir: str = typer.Option(
         ".",
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Output directory for the plugin",
     ),
 ):
@@ -207,7 +218,12 @@ def create_plugin(
                 name=f"{name}_example",
                 description="Example capability - replace with your own",
                 parameters=[
-                    {"name": "target", "description": "Target to operate on", "type": "string", "required": True}
+                    {
+                        "name": "target",
+                        "description": "Target to operate on",
+                        "type": "string",
+                        "required": True,
+                    }
                 ],
             )
         ],

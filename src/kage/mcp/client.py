@@ -105,9 +105,7 @@ class StdioTransport(MCPTransport):
 
         while True:
             try:
-                line = await loop.run_in_executor(
-                    None, self._process.stdout.readline
-                )
+                line = await loop.run_in_executor(None, self._process.stdout.readline)
                 if not line:
                     break
 
@@ -278,19 +276,21 @@ class MCPClient:
         await self.transport.connect()
 
         # Initialize connection
-        result = await self.transport.send({
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {},
+        result = await self.transport.send(
+            {
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {},
+                    },
+                    "clientInfo": {
+                        "name": "kage",
+                        "version": "0.1.0",
+                    },
                 },
-                "clientInfo": {
-                    "name": "kage",
-                    "version": "0.1.0",
-                },
-            },
-        })
+            }
+        )
 
         self.server_info = MCPServerInfo(
             name=result.get("serverInfo", {}).get("name", self.name),
@@ -300,9 +300,11 @@ class MCPClient:
         )
 
         # Send initialized notification
-        await self.transport.send({
-            "method": "notifications/initialized",
-        })
+        await self.transport.send(
+            {
+                "method": "notifications/initialized",
+            }
+        )
 
         self._connected = True
 
@@ -321,9 +323,11 @@ class MCPClient:
         if not self._connected:
             raise MCPError("Not connected")
 
-        result = await self.transport.send({
-            "method": "tools/list",
-        })
+        result = await self.transport.send(
+            {
+                "method": "tools/list",
+            }
+        )
 
         self._tools = {}
         tools = []
@@ -369,13 +373,15 @@ class MCPClient:
             )
 
         try:
-            result = await self.transport.send({
-                "method": "tools/call",
-                "params": {
-                    "name": name,
-                    "arguments": arguments or {},
-                },
-            })
+            result = await self.transport.send(
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": name,
+                        "arguments": arguments or {},
+                    },
+                }
+            )
 
             return MCPToolResult(
                 tool_name=name,

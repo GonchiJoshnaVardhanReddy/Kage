@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from kage.ai.base import BaseLLMProvider, LLMConfig, LLMMessage
 from kage.ai.prompts import build_context_message, build_system_prompt, parse_response
 from kage.ai.streaming import StreamHandler
 from kage.core.models import Command, Finding, Message, MessageRole, Session
+from kage.utils import utcnow
 
 if TYPE_CHECKING:
     from kage.persistence.config import KageConfig
@@ -52,6 +55,8 @@ class ConversationManager:
         system_prompt = build_system_prompt(
             safe_mode=self.session.safe_mode,
             scope_targets=scope_targets if scope_targets else None,
+            provider_name=self.config.llm.provider,
+            model_name=self.config.llm.model,
         )
         messages.append(LLMMessage(role="system", content=system_prompt))
 
@@ -67,8 +72,7 @@ class ConversationManager:
                     for c in self.session.commands[-5:]
                 ],
                 findings=[
-                    {"title": f.title, "severity": f.severity.value}
-                    for f in self.session.findings
+                    {"title": f.title, "severity": f.severity.value} for f in self.session.findings
                 ],
             )
             if context:
@@ -96,15 +100,13 @@ class ConversationManager:
         on_chunk: Callable[[str], None] | None = None,
     ) -> tuple[str, list[Command]]:
         """Send a message and get a response.
-        
+
         Returns:
             Tuple of (response text, list of suggested commands)
         """
         # Record user message
-        self.session.messages.append(
-            Message(role=MessageRole.USER, content=user_message)
-        )
-        self.session.updated_at = datetime.utcnow()
+        self.session.messages.append(Message(role=MessageRole.USER, content=user_message))
+        self.session.updated_at = utcnow()
 
         # Build messages for LLM
         messages = self._build_messages(user_message)
@@ -121,10 +123,15 @@ class ConversationManager:
         except Exception as e:
             response_text = f"Error communicating with LLM: {e}"
 
+        # Guard against empty responses (e.g. stale connection, provider glitch)
+        if not response_text or not response_text.strip():
+            response_text = (
+                "No response received from LLM. "
+                "Please check your provider connection and try again."
+            )
+
         # Record assistant message
-        self.session.messages.append(
-            Message(role=MessageRole.ASSISTANT, content=response_text)
-        )
+        self.session.messages.append(Message(role=MessageRole.ASSISTANT, content=response_text))
 
         # Parse response for commands
         parsed = parse_response(response_text)
@@ -141,10 +148,8 @@ class ConversationManager:
     async def send_message_sync(self, user_message: str) -> tuple[str, list[Command]]:
         """Send a message without streaming (for simpler use cases)."""
         # Record user message
-        self.session.messages.append(
-            Message(role=MessageRole.USER, content=user_message)
-        )
-        self.session.updated_at = datetime.utcnow()
+        self.session.messages.append(Message(role=MessageRole.USER, content=user_message))
+        self.session.updated_at = utcnow()
 
         # Build messages for LLM
         messages = self._build_messages(user_message)
@@ -156,9 +161,7 @@ class ConversationManager:
             response_text = f"Error communicating with LLM: {e}"
 
         # Record assistant message
-        self.session.messages.append(
-            Message(role=MessageRole.ASSISTANT, content=response_text)
-        )
+        self.session.messages.append(Message(role=MessageRole.ASSISTANT, content=response_text))
 
         # Parse response for commands
         parsed = parse_response(response_text)
@@ -216,14 +219,17 @@ If no significant findings, say "No significant findings."
                     evidence=f.evidence,
                     impact=f.impact,
                     remediation=f.remediation,
-                    target=self.session.scope.targets[0].value if self.session.scope.targets else None,
+                    target=self.session.scope.targets[0].value
+                    if self.session.scope.targets
+                    else None,
                     auto_detected=True,
                 )
                 findings.append(finding)
 
             return findings
 
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to analyze command output for '%s': %s", command.command, e)
             return []
 
     def clear_history(self) -> None:
