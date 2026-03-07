@@ -32,15 +32,19 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 | Feature | Description |
 |---------|-------------|
 | 🤖 **Multi-LLM Support** | Ollama, LM Studio, OpenAI, and any OpenAI-compatible API |
-| 💬 **Interactive CLI** | Clean terminal interface with Rich formatting |
+| 💬 **Interactive CLI** | Clean terminal interface with Rich formatting and animated banner |
 | 🔥 **Hack Mode** | Fully autonomous penetration testing |
 | 🛡️ **Safe Mode** | Blocks dangerous commands (rm -rf, fork bombs, etc.) |
-| 🎯 **Scope Enforcement** | Prevents accidental out-of-scope testing |
+| 🎯 **Scope Enforcement** | Prevents out-of-scope testing with DNS resolution and CIDR validation |
 | ⚡ **Tool Execution** | Run security tools with approval workflow |
-| 📝 **Session Management** | Save, resume, and replay testing sessions |
+| 📁 **File Operations** | Read, write, edit, create files and browse directories from chat |
+| 📝 **Session Management** | Save, resume, import/export testing sessions |
 | 📊 **Report Generation** | Professional reports in Markdown, HTML, or PDF |
-| 🔌 **Plugin System** | Extend capabilities with custom plugins |
+| 🔌 **Plugin System** | Extend capabilities with `@capability` decorator and sandboxed execution |
 | 🔗 **MCP Integration** | Connect to Model Context Protocol servers |
+| 🖥️ **Multi-Executor** | Execute commands locally, via SSH, Docker, or WSL |
+| 🔄 **Auto-Reconnect** | Automatic LLM reconnection with retry and exponential backoff |
+| ⌨️ **Tab Completion** | Slash command autocomplete via readline |
 
 ## 📋 Table of Contents
 
@@ -123,12 +127,56 @@ cd kage
 pip install -e .
 ```
 
+### Install on Kali/Ubuntu (Externally-Managed Environment)
+
+Modern Kali and Ubuntu systems use PEP 668 which prevents `pip install` system-wide.
+Use a virtual environment instead:
+
+```bash
+git clone https://github.com/GonchiJoshnaVardhanReddy/kage.git
+cd kage
+
+# Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install Kage
+pip install -e .
+
+# Run Kage (venv must be active)
+kage
+```
+
+> **Tip:** Add `source ~/kage/.venv/bin/activate` to your `~/.bashrc` or `~/.zshrc` so Kage is always available.
+
+Alternatively, use **pipx** for automatic venv management:
+
+```bash
+sudo apt install pipx
+pipx install -e ./kage
+```
+
 ### Verify Installation
 
 ```bash
 kage --version
 kage --help
 ```
+
+### Supported Platforms
+
+| Platform | Python | Status |
+|----------|--------|--------|
+| **Kali Linux** | 3.10–3.14 | ✅ Tested (use venv) |
+| **Ubuntu/Debian** | 3.10–3.14 | ✅ Tested |
+| **Parrot OS** | 3.10–3.14 | ✅ Tested |
+| **Arch Linux** | 3.10–3.14 | ✅ Compatible |
+| **Fedora/RHEL** | 3.10–3.14 | ✅ Compatible |
+| **macOS** | 3.10–3.14 | ✅ Compatible |
+| **Windows** | 3.10–3.14 | ✅ Compatible (PowerShell) |
+| **WSL** | 3.10–3.14 | ✅ Compatible |
+
+> **Note:** On Kali and newer Ubuntu/Debian, use a virtual environment (`python3 -m venv .venv`) due to PEP 668.
 
 ---
 
@@ -595,7 +643,15 @@ Hack mode generates:
 | `/commands` | Show pending commands |
 | `/run` | Execute pending commands |
 | `/save` | Save current session |
+| `/load <name>` | Load a saved session |
+| `/saves` | List all saved sessions |
 | `/export [path]` | Export session to file |
+| `/import <path>` | Import session from JSON file |
+| `/read <path>` | Read and display a file with syntax highlighting |
+| `/write <path> <text>` | Write text to a file |
+| `/edit <path>` | Interactive file editor (append, replace, delete, insert lines) |
+| `/create <path>` | Create a new file with interactive content input |
+| `/ls [path]` | List directory contents |
 
 ---
 
@@ -680,18 +736,20 @@ pip install sqlmap
 kage/
 ├── src/kage/
 │   ├── ai/              # LLM providers (Ollama, OpenAI, etc.)
-│   ├── cli/             # CLI commands and UI
-│   ├── core/            # Core models, hack mode engine
-│   ├── executor/        # Command execution
+│   ├── cli/             # CLI commands and UI (chat, hack, plugins)
+│   ├── core/            # Core models, conversation manager, hack mode
+│   ├── executor/        # Command execution (local, SSH, Docker, WSL)
 │   ├── mcp/             # MCP protocol integration
-│   ├── persistence/     # Config and session storage
-│   ├── plugins/         # Plugin system
-│   ├── reporting/       # Report generation
-│   └── security/        # Safe mode, scope validation
+│   ├── persistence/     # Config (YAML) and session storage (JSON)
+│   ├── plugins/         # Plugin system with sandbox
+│   ├── reporting/       # Report generation (Markdown, HTML, PDF)
+│   ├── security/        # Safe mode, scope validation, audit logging
+│   └── utils/           # Shared utilities (datetime helpers)
 ├── scripts/             # Installation scripts
-├── templates/           # Report templates
-├── tests/               # Test suite
-└── docs/                # Documentation
+├── templates/           # Report templates (Jinja2)
+├── tests/               # Test suite (134 tests)
+├── docs/                # Documentation
+└── CHANGELOG.md         # Version history
 ```
 
 ---
