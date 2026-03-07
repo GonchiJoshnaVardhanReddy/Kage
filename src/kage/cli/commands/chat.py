@@ -166,11 +166,7 @@ class ChatSession:
         "saves": "List all saved sessions",
         "export": "Export session to file",
         "import": "Import a session from file",
-        "read": "Read a file (use: /read <path>)",
-        "write": "Write content to file (use: /write <path> <content>)",
-        "edit": "Edit a file (use: /edit <path>)",
-        "create": "Create a new file (use: /create <path>)",
-        "ls": "List directory contents (use: /ls [path])",
+        # File operations use @ prefix (e.g., @read file.txt)
     }
 
     def _setup_completer(self) -> None:
@@ -179,9 +175,11 @@ class ChatSession:
             import readline
 
             commands = ["/" + cmd for cmd in self.COMMANDS]
+            at_commands = ["@read", "@write", "@edit", "@create", "@ls"]
+            all_completions = commands + at_commands
 
             def completer(text: str, state: int) -> str | None:
-                options = [c for c in commands if c.startswith(text)]
+                options = [c for c in all_completions if c.startswith(text)]
                 return options[state] if state < len(options) else None
 
             readline.set_completer(completer)
@@ -246,11 +244,6 @@ class ChatSession:
             "mcp",
             "hacker",
             "hack",
-            "read",
-            "write",
-            "edit",
-            "create",
-            "ls",
         ]
 
         if cmd not in exact_commands:
@@ -322,37 +315,6 @@ class ChatSession:
         elif cmd == "mcp":
             self._manage_mcp()
 
-        elif cmd == "read":
-            if args:
-                self._read_file(args)
-            else:
-                self.console.print("[muted]Usage: /read <path>[/muted]")
-
-        elif cmd == "write":
-            if args:
-                parts_w = args.split(maxsplit=1)
-                if len(parts_w) == 2:
-                    self._write_file(parts_w[0], parts_w[1])
-                else:
-                    self.console.print("[muted]Usage: /write <path> <content>[/muted]")
-            else:
-                self.console.print("[muted]Usage: /write <path> <content>[/muted]")
-
-        elif cmd == "edit":
-            if args:
-                self._edit_file(args)
-            else:
-                self.console.print("[muted]Usage: /edit <path>[/muted]")
-
-        elif cmd == "create":
-            if args:
-                self._create_file(args)
-            else:
-                self.console.print("[muted]Usage: /create <path>[/muted]")
-
-        elif cmd == "ls":
-            self._list_directory(args if args else ".")
-
         elif cmd in ("hacker", "hack"):
             self._enter_hacker_mode()
             return False  # Exit chat loop to enter hack mode
@@ -396,17 +358,18 @@ class ChatSession:
 [command]/run[/command]           - Execute pending commands
 [command]/history[/command]       - Show command history
 
-[header]File Operations[/header]
+[header]File Operations (@ prefix)[/header]
 
-[command]/read <path>[/command]   - Read and display a file
-[command]/write <path> <text>[/command] - Write text to a file
-[command]/edit <path>[/command]   - Interactive file editor
-[command]/create <path>[/command] - Create a new file
-[command]/ls [path][/command]     - List directory contents
+[command]@read <path>[/command]   - Read and display a file
+[command]@write <path> <text>[/command] - Write text to a file
+[command]@edit <path>[/command]   - Interactive file editor
+[command]@create <path>[/command] - Create a new file
+[command]@ls [path][/command]     - List directory contents
 
 [header]Tips[/header]
 
 • Type partial commands to see suggestions (e.g., /h → /help, /history, /hack)
+• Use @ for file operations (e.g., @read config.yaml, @ls /tmp)
 • Use /save <name> to name your sessions for easy recall
 • Use /load <name> to continue where you left off
 """
@@ -650,6 +613,52 @@ class ChatSession:
             )
         except Exception as e:
             self.console.print(f"[error]Failed to import session: {e}[/error]")
+
+    def _handle_at_command(self, command: str) -> None:
+        """Handle @ file operation commands."""
+        rest = command[1:].strip()
+        if not rest:
+            self.console.print("[header]@ File Operations:[/header]")
+            self.console.print("  [command]@read <path>[/command]   - Read and display a file")
+            self.console.print("  [command]@write <path> <text>[/command] - Write text to a file")
+            self.console.print("  [command]@edit <path>[/command]   - Interactive file editor")
+            self.console.print("  [command]@create <path>[/command] - Create a new file")
+            self.console.print("  [command]@ls [path][/command]     - List directory contents")
+            return
+
+        parts = rest.split(maxsplit=1)
+        action = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        if action == "read":
+            if args:
+                self._read_file(args)
+            else:
+                self.console.print("[muted]Usage: @read <path>[/muted]")
+        elif action == "write":
+            if args:
+                parts_w = args.split(maxsplit=1)
+                if len(parts_w) == 2:
+                    self._write_file(parts_w[0], parts_w[1])
+                else:
+                    self.console.print("[muted]Usage: @write <path> <content>[/muted]")
+            else:
+                self.console.print("[muted]Usage: @write <path> <content>[/muted]")
+        elif action == "edit":
+            if args:
+                self._edit_file(args)
+            else:
+                self.console.print("[muted]Usage: @edit <path>[/muted]")
+        elif action == "create":
+            if args:
+                self._create_file(args)
+            else:
+                self.console.print("[muted]Usage: @create <path>[/muted]")
+        elif action == "ls":
+            self._list_directory(args if args else ".")
+        else:
+            # If no known action, treat as a file path to read
+            self._read_file(rest)
 
     def _read_file(self, path_str: str) -> None:
         """Read and display a file's contents."""
@@ -1559,6 +1568,11 @@ class ChatSession:
                 if user_input.startswith("/"):
                     if not self._handle_slash_command(user_input):
                         break
+                    continue
+
+                # Handle @ file operations
+                if user_input.startswith("@"):
+                    self._handle_at_command(user_input)
                     continue
 
                 # Process regular message

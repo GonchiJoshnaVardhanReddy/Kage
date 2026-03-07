@@ -37,7 +37,7 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 | 🛡️ **Safe Mode** | Blocks dangerous commands (rm -rf, fork bombs, etc.) |
 | 🎯 **Scope Enforcement** | Prevents out-of-scope testing with DNS resolution and CIDR validation |
 | ⚡ **Tool Execution** | Run security tools with approval workflow |
-| 📁 **File Operations** | Read, write, edit, create files and browse directories from chat |
+| 📁 **File Operations** | Read, write, edit, create files using `@` prefix (e.g., `@read file.txt`) |
 | 📝 **Session Management** | Save, resume, import/export testing sessions |
 | 📊 **Report Generation** | Professional reports in Markdown, HTML, or PDF |
 | 🔌 **Plugin System** | Extend capabilities with `@capability` decorator and sandboxed execution |
@@ -647,11 +647,17 @@ Hack mode generates:
 | `/saves` | List all saved sessions |
 | `/export [path]` | Export session to file |
 | `/import <path>` | Import session from JSON file |
-| `/read <path>` | Read and display a file with syntax highlighting |
-| `/write <path> <text>` | Write text to a file |
-| `/edit <path>` | Interactive file editor (append, replace, delete, insert lines) |
-| `/create <path>` | Create a new file with interactive content input |
-| `/ls [path]` | List directory contents |
+
+### @ File Operations
+
+| Command | Description |
+|---------|-------------|
+| `@read <path>` | Read and display a file with syntax highlighting |
+| `@write <path> <text>` | Write text to a file |
+| `@edit <path>` | Interactive file editor (append, replace, delete, insert lines) |
+| `@create <path>` | Create a new file with interactive content input |
+| `@ls [path]` | List directory contents |
+| `@<path>` | Shorthand — reads the file directly |
 
 ---
 
