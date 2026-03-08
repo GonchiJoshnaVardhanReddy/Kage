@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from kage.cli.ui.themes import KAGE_LOGO, KAGE_LOGO_SMALL, KAGE_THEME
+from kage.cli.wizard.setup import _is_embedding_model
 from kage.persistence.config import KageConfig
 from kage.version import __version__
 
@@ -140,6 +141,8 @@ def launch(
         try:
             connected = await p.check_connection()
             models = await p.list_models() if connected else []
+            # Filter out embedding models — they can't be used for chat
+            models = [m for m in models if not _is_embedding_model(m)]
             return connected, models
         finally:
             await p.close()

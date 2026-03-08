@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -216,6 +218,11 @@ class ChatSession:
 
     def _handle_slash_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue loop."""
+        # Easter egg — check before parsing (supports multi-word slash input)
+        if self._is_who_command(command):
+            self._show_easter_egg()
+            return True
+
         parts = command[1:].split(maxsplit=1)
         cmd = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
@@ -319,11 +326,67 @@ class ChatSession:
             self._enter_hacker_mode()
             return False  # Exit chat loop to enter hack mode
 
-        # Easter egg - hidden command
-        elif command.lower() in ("/whoareyou", "/who are you", "/who are you?"):
-            self._show_easter_egg()
-
         return True
+
+    @staticmethod
+    def _is_who_command(command: str) -> bool:
+        """Check if a slash command is asking about Kage's identity."""
+        normalized = re.sub(r"[^a-z]", "", command.lower())
+        return normalized in (
+            "whoareyou",
+            "whoru",
+            "whoami",
+            "aboutkage",
+            "about",
+            "identity",
+            "whoisthis",
+            "whatareyou",
+            "whatsthis",
+        )
+
+    # Patterns that indicate the user is asking about Kage's identity
+    _IDENTITY_PATTERNS = [
+        r"\bwho\s+are\s+you\b",
+        r"\bwhat\s+are\s+you\b",
+        r"\bwhat\s+is\s+kage\b",
+        r"\btell\s+me\s+about\s+(yourself|kage)\b",
+        r"\bwhat\s+can\s+you\s+do\b",
+        r"\bwhat\s+do\s+you\s+do\b",
+        r"\bintroduce\s+yourself\b",
+        r"\bdescribe\s+yourself\b",
+        r"\byour\s+name\b",
+        r"\bwhat\s+is\s+your\s+name\b",
+        r"\bwho\s+r\s+u\b",
+        r"\bwho\s+is\s+this\b",
+    ]
+
+    def _is_identity_question(self, text: str) -> bool:
+        """Check if the user is asking about Kage's identity."""
+        lower = text.strip().lower()
+        return any(re.search(p, lower) for p in self._IDENTITY_PATTERNS)
+
+    def _show_identity(self) -> None:
+        """Display Kage's identity information."""
+        self.console.print()
+        self.console.print("[assistant]KAGE:[/assistant]")
+        self.console.print()
+
+        identity = Panel(
+            "[bold cyan]I am Kage[/bold cyan] — your AI-powered penetration testing assistant.\n\n"
+            "I help security professionals with:\n"
+            "  [green]•[/green] Authorized security assessments & red team ops\n"
+            "  [green]•[/green] Bug bounty hunting & vulnerability analysis\n"
+            "  [green]•[/green] CTF challenges & exploitation guidance\n"
+            "  [green]•[/green] Reconnaissance, enumeration & post-exploitation\n"
+            "  [green]•[/green] Security report generation & findings management\n\n"
+            f"[muted]Powered by {self.config.llm.provider} / {self.config.llm.model}[/muted]\n"
+            "[muted]Type /help for commands • /whoareyou for a surprise[/muted]",
+            title="[bold red]⚡ K A G E ⚡[/bold red]",
+            border_style="red",
+            padding=(1, 2),
+        )
+        self.console.print(identity)
+        self.console.print()
 
     def _show_help(self) -> None:
         """Display help information."""
@@ -912,28 +975,39 @@ class ChatSession:
             self.console.print(f"[error]Failed to list directory: {e}[/error]")
 
     def _show_easter_egg(self) -> None:
-        """Display the hidden easter egg."""
-        joker_card = """
-[bold red]    ┌─────────────────────┐[/bold red]
-[bold red]    │ ♠                 ♠ │[/bold red]
-[bold red]    │                     │[/bold red]
-[bold red]    │      [yellow]▄▄▄▄▄▄▄[/yellow]       │[/bold red]
-[bold red]    │     [yellow]█[/yellow][white]▀[/white] [cyan]◉[/cyan] [white]▀[/white][yellow]█[/yellow]      │[/bold red]
-[bold red]    │     [yellow]█[/yellow] [red]◡◡◡[/red] [yellow]█[/yellow]      │[/bold red]
-[bold red]    │      [yellow]███████[/yellow]       │[/bold red]
-[bold red]    │     [green]╔═══════╗[/green]      │[/bold red]
-[bold red]    │     [green]║ JOKER ║[/green]      │[/bold red]
-[bold red]    │     [green]╚═══════╝[/green]      │[/bold red]
-[bold red]    │                     │[/bold red]
-[bold red]    │ ♠                 ♠ │[/bold red]
-[bold red]    └─────────────────────┘[/bold red]
-"""
-        self.console.print(joker_card)
+        """Display the hidden easter egg with animated joker card."""
+        joker_lines = [
+            "",
+            "  🃏",
+            "",
+            "[bold magenta]       ██╗ ██████╗ ██╗  ██╗███████╗██████╗ [/bold magenta]",
+            "[bold magenta]       ██║██╔═══██╗██║ ██╔╝██╔════╝██╔══██╗[/bold magenta]",
+            "[bold yellow]       ██║██║   ██║█████╔╝ █████╗  ██████╔╝[/bold yellow]",
+            "[bold yellow]  ██   ██║██║   ██║██╔═██╗ ██╔══╝  ██╔══██╗[/bold yellow]",
+            "[bold red]  ╚█████╔╝╚██████╔╝██║  ██╗███████╗██║  ██║[/bold red]",
+            "[bold red]   ╚════╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝[/bold red]",
+            "",
+            "  🃏",
+            "",
+        ]
+
         self.console.print()
-        self.console.print(
-            '[italic cyan]"Jack of all trades. Master of none, '
-            'but oftentimes better than a master of one."[/italic cyan]'
+        for line in joker_lines:
+            self.console.print(line, highlight=False)
+            time.sleep(0.07)
+
+        time.sleep(0.3)
+
+        # Typewriter effect for the quote
+        quote = (
+            '"Jack of all trades. Master of none, '
+            'But oftentimes better than a master of one."'
         )
+        self.console.print("  ", end="")
+        for char in quote:
+            self.console.print(f"[italic cyan]{char}[/italic cyan]", end="")
+            time.sleep(0.03)
+        self.console.print()
         self.console.print()
 
     def _change_model(self) -> None:
@@ -1539,10 +1613,10 @@ class ChatSession:
         # Set up tab completion for slash commands
         self._setup_completer()
 
-        # Show animated startup banner with identity
-        from kage.cli.ui.banner import play_startup_animation
+        # Show static startup banner
+        from kage.cli.ui.banner import show_startup_banner
 
-        play_startup_animation(
+        show_startup_banner(
             self.console,
             provider=self.config.llm.provider,
             model=self.config.llm.model,
@@ -1573,6 +1647,11 @@ class ChatSession:
                 # Handle @ file operations
                 if user_input.startswith("@"):
                     self._handle_at_command(user_input)
+                    continue
+
+                # Intercept identity questions and answer locally
+                if self._is_identity_question(user_input):
+                    self._show_identity()
                     continue
 
                 # Process regular message

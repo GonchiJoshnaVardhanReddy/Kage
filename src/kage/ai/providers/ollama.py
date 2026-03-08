@@ -72,6 +72,9 @@ class OllamaProvider(BaseLLMProvider):
             logger.warning("Failed to list Ollama models: %s", e)
         return []
 
+    # Keywords that indicate a model is embedding-only (not suitable for chat)
+    EMBEDDING_KEYWORDS = {"embed", "embedding", "nomic-embed", "bge", "e5", "gte"}
+
     def _build_request_body(
         self,
         messages: list[LLMMessage],
@@ -79,6 +82,13 @@ class OllamaProvider(BaseLLMProvider):
         stream: bool = False,
     ) -> dict[str, Any]:
         """Build the request body for Ollama API."""
+        model_lower = config.model.lower()
+        if any(kw in model_lower for kw in self.EMBEDDING_KEYWORDS):
+            raise ValueError(
+                f"Model '{config.model}' appears to be an embedding model, not a chat model. "
+                f"Please configure a chat model (e.g. llama3.1, mistral, qwen2). "
+                f"Run 'kage setup' to reconfigure."
+            )
         body: dict[str, Any] = {
             "model": config.model,
             "messages": self._convert_messages(messages),

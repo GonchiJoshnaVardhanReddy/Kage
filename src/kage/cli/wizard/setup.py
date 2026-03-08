@@ -15,12 +15,23 @@ from kage.cli.ui.themes import KAGE_LOGO, KAGE_THEME
 from kage.persistence.config import KageConfig, LLMConfig
 
 
+EMBEDDING_MODEL_KEYWORDS = {"embed", "embedding", "nomic-embed", "bge", "e5", "gte"}
+
+
+def _is_embedding_model(name: str) -> bool:
+    """Check if a model name looks like an embedding model (not suitable for chat)."""
+    lower = name.lower()
+    return any(kw in lower for kw in EMBEDDING_MODEL_KEYWORDS)
+
+
 async def _test_ollama_connection(base_url: str) -> tuple[bool, list[str]]:
-    """Test Ollama connection and list models."""
+    """Test Ollama connection and list chat-capable models."""
     provider = OllamaProvider(base_url=base_url)
     try:
         connected = await provider.check_connection()
         models = await provider.list_models() if connected else []
+        # Filter out embedding models — they can't be used for chat
+        models = [m for m in models if not _is_embedding_model(m)]
         return connected, models
     finally:
         await provider.close()

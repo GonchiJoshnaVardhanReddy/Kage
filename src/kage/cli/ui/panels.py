@@ -56,6 +56,7 @@ def create_status_panel(
         title="[panel.title]Status[/panel.title]",
         border_style="panel.border",
         padding=(0, 1),
+        expand=True,
     )
 
 

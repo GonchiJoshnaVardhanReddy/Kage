@@ -47,44 +47,44 @@ TAGLINE_FRAMES = [
 LOADING_FRAMES = ["✦", "✧", "✦", "✧"]
 
 
+def show_startup_banner(
+    console: Console,
+    provider: str = "ollama",
+    model: str = "unknown",
+) -> None:
+    """Show the Kage startup banner (static, no animation)."""
+    console.print()
+    console.print(KAGE_FRAMES[-1])  # Final logo only
+    console.print()
+    console.print(TAGLINE_FRAMES[-1])  # Final tagline
+    console.print()
+    console.print(
+        "    [bright_cyan]I am [bold]Kage[/bold][/bright_cyan]"
+        "[cyan] — your AI pentest assistant[/cyan]"
+    )
+    console.print(
+        f"    [bright_black]Powered by [white]{provider}[/white]"
+        f" / [white]{model}[/white][/bright_black]"
+    )
+    console.print(
+        "    [bright_black]Type [white]/help[/white] for commands"
+        " • [white]/exit[/white] to quit[/bright_black]"
+    )
+    console.print()
+    console.print("[bright_black]    ─────────────────────────────────────────[/bright_black]")
+    console.print()
+
+
 def play_startup_animation(
     console: Console,
     provider: str = "ollama",
     model: str = "unknown",
 ) -> None:
-    """Play the Kage startup animation with identity intro."""
-    # Check if terminal supports animation (not piped)
-    if not sys.stdout.isatty():
-        _show_static_banner(console, provider, model)
-        return
+    """Play the Kage startup animation with identity intro.
 
-    console.print()
-
-    # Phase 1: Animate the logo (3 frames)
-    for i, frame in enumerate(KAGE_FRAMES):
-        # Move cursor up to overwrite previous frame (except first)
-        if i > 0:
-            console.print("\033[6A", end="")
-        console.print(frame)
-        time.sleep(0.15)
-
-    console.print()
-
-    # Phase 2: Animate the tagline
-    for i, tagline in enumerate(TAGLINE_FRAMES):
-        if i > 0:
-            console.print("\033[1A", end="")
-        console.print(tagline)
-        time.sleep(0.12)
-
-    console.print()
-
-    # Phase 3: Identity intro with typing effect
-    _type_identity(console, provider, model)
-
-    console.print()
-    console.print("[bright_black]    ─────────────────────────────────────────[/bright_black]")
-    console.print()
+    Deprecated: Use show_startup_banner() instead.
+    """
+    show_startup_banner(console, provider, model)
 
 
 def _type_identity(
