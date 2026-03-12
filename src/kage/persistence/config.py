@@ -147,6 +147,18 @@ class HackModeConfig(BaseModel):
     )
 
 
+class KaliMCPConfig(BaseModel):
+    """Kali MCP server configuration for remote security tool execution."""
+
+    enabled: bool = False
+    servers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of server names to URLs, e.g. {'kali_local': 'http://127.0.0.1:5000'}",
+    )
+    fallback_to_local: bool = True
+    default_timeout: int = 600
+
+
 class KageConfig(BaseSettings):
     """Main configuration for Kage."""
 
@@ -162,6 +174,7 @@ class KageConfig(BaseSettings):
     ui: UIConfig = Field(default_factory=UIConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     hack_mode: HackModeConfig = Field(default_factory=HackModeConfig)
+    kali: KaliMCPConfig = Field(default_factory=KaliMCPConfig)
 
     first_run: bool = True
 

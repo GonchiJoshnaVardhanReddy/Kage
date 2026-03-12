@@ -31,6 +31,7 @@ class ExecutionEnvironment(str, Enum):
     SSH = "ssh"
     DOCKER = "docker"
     WSL = "wsl"
+    KALI_MCP = "kali_mcp"
 
 
 class CommandStatus(str, Enum):

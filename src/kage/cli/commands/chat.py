@@ -12,7 +12,10 @@ from rich.panel import Panel
 
 from kage.ai.providers import create_provider
 from kage.core.conversation import ConversationManager
-from kage.core.models import Command, CommandStatus, Session, Target
+from kage.core.intent import Intent, classify_intent, needs_ai_classification
+from kage.core.models import Command, CommandStatus, ExecutionEnvironment, Session, Target
+from kage.core.planner import ExecutionPlan, PlanStatus
+from kage.core.router import CommandRouter, ExecutorType
 from kage.utils import utcnow
 
 if TYPE_CHECKING:
@@ -39,6 +42,18 @@ class ChatSession:
         self._session_storage = None
         self._auto_save = None
         self._resumed = False
+
+        # Approval preferences (per-session memory)
+        self._approved_all: bool = False
+        self._approved_tools: set[str] = set()
+
+        # Command router
+        self._router = CommandRouter(
+            kali_available=config.kali.enabled and bool(config.kali.servers),
+        )
+
+        # Kali executor (lazy init)
+        self._kali_executor = None
 
         # Try to resume existing session
         if session_id:
@@ -444,6 +459,65 @@ class ChatSession:
 
         self.console.print(create_scope_panel(self.session.scope))
 
+    def _check_and_prompt_scope(self, user_input: str) -> None:
+        """Check if scope is needed and prompt user to define it."""
+        import ipaddress
+
+        from kage.cli.ui.prompts import prompt_scope_definition, prompt_scope_input
+
+        # Try to extract a target from the input
+        import re as _re
+
+        target = None
+        # Match IPs
+        ip_match = _re.search(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?)\b", user_input)
+        if ip_match:
+            target = ip_match.group(1)
+        else:
+            # Match domains (word.tld)
+            domain_match = _re.search(r"\b([\w-]+\.[\w.-]+\.\w{2,}|[\w-]+\.\w{2,})\b", user_input)
+            if domain_match:
+                candidate = domain_match.group(1)
+                # Exclude common non-targets
+                if candidate not in ("example.com",) and "." in candidate:
+                    target = candidate
+
+        if not target:
+            return
+
+        choice = prompt_scope_definition(self.console, target)
+
+        if choice == "add":
+            # Determine target type
+            target_type = "domain"
+            try:
+                ipaddress.ip_address(target)
+                target_type = "ip"
+            except ValueError:
+                try:
+                    ipaddress.ip_network(target, strict=False)
+                    target_type = "cidr"
+                except ValueError:
+                    if target.startswith(("http://", "https://")):
+                        target_type = "url"
+
+            self.session.scope.targets.append(
+                Target(value=target, target_type=target_type)
+            )
+            self.console.print(f"[success]Added {target} to scope.[/success]")
+
+        elif choice == "define":
+            scope_input = prompt_scope_input(self.console)
+            if scope_input.strip():
+                self._parse_and_add_scope(scope_input)
+                self.console.print(
+                    f"[success]Scope updated: "
+                    f"{len(self.session.scope.targets)} target(s)[/success]"
+                )
+
+        else:
+            self.console.print("[muted]Proceeding without scope.[/muted]")
+
     def _show_findings(self) -> None:
         """Display findings."""
         if not self.session.findings:
@@ -782,17 +856,17 @@ class ChatSession:
             self.console.print(f"[error]Failed to read file: {e}[/error]")
 
     def _write_file(self, path_str: str, content: str) -> None:
-        """Write content to a file."""
+        """Write content to a file with approval."""
         from pathlib import Path
 
-        file_path = Path(path_str).expanduser().resolve()
+        from kage.cli.ui.prompts import prompt_file_approval
 
-        if file_path.exists():
-            self.console.print(f"[warning]File exists: {file_path}[/warning]")
-            confirm = self.console.input("[warning]Overwrite? (y/N): [/warning]").strip().lower()
-            if confirm != "y":
-                self.console.print("[muted]Write cancelled.[/muted]")
-                return
+        file_path = Path(path_str).expanduser().resolve()
+        action = "overwrite" if file_path.exists() else "create"
+
+        if not prompt_file_approval(self.console, action, str(file_path), content):
+            self.console.print("[muted]Write cancelled.[/muted]")
+            return
 
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -924,6 +998,13 @@ class ChatSession:
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             content = "\n".join(lines) + "\n"
+
+            from kage.cli.ui.prompts import prompt_file_approval
+
+            if not prompt_file_approval(self.console, "create", str(file_path), content):
+                self.console.print("[muted]File creation cancelled.[/muted]")
+                return
+
             file_path.write_text(content, encoding="utf-8")
             self.console.print(f"[success]Created: {file_path}[/success]")
             self.console.print(f"[muted]{len(lines)} lines, {len(content)} bytes[/muted]")
@@ -1420,13 +1501,17 @@ class ChatSession:
         )
 
     def _run_pending_commands(self) -> None:
-        """Execute pending commands with approval workflow."""
+        """Execute pending commands with planning, approval, and routing."""
         if not self._pending_commands:
             self.console.print("[muted]No pending commands.[/muted]")
             return
 
-        from rich.prompt import Confirm
-
+        from kage.cli.ui.prompts import (
+            ApprovalChoice,
+            prompt_command_approval,
+            prompt_plan_approval,
+            prompt_plan_edit,
+        )
         from kage.security import ApprovalDecision, ApprovalWorkflow
 
         # Create approval workflow
@@ -1437,18 +1522,54 @@ class ChatSession:
             scope_enforcement=self.config.security.scope_enforcement,
         )
 
-        for cmd in self._pending_commands[:]:
+        commands_to_run = self._pending_commands[:]
+
+        # --- Multi-step plan display (2+ commands) ---
+        if len(commands_to_run) >= 2:
+            plan = ExecutionPlan.from_commands(commands_to_run)
+            steps = [
+                (s.index, s.command.command, s.command.description)
+                for s in plan.steps
+            ]
+
+            choice = prompt_plan_approval(self.console, steps)
+
+            if choice == "cancel":
+                self._pending_commands.clear()
+                self.console.print("[muted]Plan cancelled.[/muted]")
+                return
+
+            if choice == "edit":
+                to_remove = prompt_plan_edit(self.console, plan.total_steps)
+                for idx in sorted(to_remove, reverse=True):
+                    plan.remove_step(idx)
+
+                if not plan.steps:
+                    self._pending_commands.clear()
+                    self.console.print("[muted]All steps removed. Plan cancelled.[/muted]")
+                    return
+
+                commands_to_run = [s.command for s in plan.steps]
+                self.console.print(
+                    f"[info]Running {len(commands_to_run)} step(s).[/info]"
+                )
+
+        # --- Execute each command ---
+        for i, cmd in enumerate(commands_to_run):
+            step_label = f"[{i + 1}/{len(commands_to_run)}]" if len(commands_to_run) > 1 else ""
+
             self.console.print()
+            if step_label:
+                self.console.print(f"[info]{step_label}[/info] ", end="")
             self.console.print(f"[command]$ {cmd.command}[/command]")
             if cmd.description:
                 self.console.print(f"[muted]{cmd.description}[/muted]")
 
-            # Run through approval workflow
+            # Run through security approval workflow
             result = asyncio.run(workflow.evaluate(cmd))
 
             # Handle blocked commands
             if result.decision == ApprovalDecision.BLOCKED:
-                self.console.print()
                 self.console.print(
                     Panel(
                         f"[danger]{result.reason}[/danger]",
@@ -1458,7 +1579,8 @@ class ChatSession:
                 )
                 cmd.status = CommandStatus.REJECTED
                 self.session.commands.append(cmd)
-                self._pending_commands.remove(cmd)
+                if cmd in self._pending_commands:
+                    self._pending_commands.remove(cmd)
                 continue
 
             # Show warnings
@@ -1466,32 +1588,88 @@ class ChatSession:
                 self.console.print()
                 for warning in result.warnings:
                     self.console.print(f"[warning]{warning}[/warning]")
-                self.console.print()
 
-            # Get user approval
+            # --- Enhanced approval (4-option) ---
             if result.decision == ApprovalDecision.NEEDS_CONFIRMATION:
-                if not Confirm.ask("[warning]Execute anyway?[/warning]", default=False):
+                approval = prompt_command_approval(
+                    self.console, cmd,
+                    session_approved_all=self._approved_all,
+                    session_approved_tools=self._approved_tools,
+                )
+
+                if approval == ApprovalChoice.CANCEL:
                     cmd.status = CommandStatus.REJECTED
                     self.session.commands.append(cmd)
-                    self._pending_commands.remove(cmd)
+                    if cmd in self._pending_commands:
+                        self._pending_commands.remove(cmd)
                     self.console.print("[muted]Skipped[/muted]")
                     continue
 
-            # Execute command
-            cmd.status = CommandStatus.APPROVED
-            asyncio.run(self._execute_command(cmd))
-            self._pending_commands.remove(cmd)
+                if approval == ApprovalChoice.ALWAYS:
+                    self._approved_all = True
 
-    async def _execute_command(self, cmd: Command) -> None:
-        """Execute a single command using the executor."""
+                if approval == ApprovalChoice.APPROVE_TOOL:
+                    tool = cmd.command.strip().split()[0].lower()
+                    self._approved_tools.add(tool)
+                    self.console.print(
+                        f"[info]Auto-approving '{tool}' for this session.[/info]"
+                    )
+
+            # --- Route and execute ---
+            cmd.status = CommandStatus.APPROVED
+            route = self._router.route(cmd.command)
+
+            if route.executor_type == ExecutorType.KALI_MCP:
+                cmd.environment = ExecutionEnvironment.KALI_MCP
+                self.console.print(
+                    f"[info]→ Routing to Kali MCP ({route.reasoning})[/info]"
+                )
+
+            asyncio.run(self._execute_command(cmd, route))
+            if cmd in self._pending_commands:
+                self._pending_commands.remove(cmd)
+
+    async def _execute_command(self, cmd: Command, route: RouteResult | None = None) -> None:
+        """Execute a single command using the appropriate executor."""
+        from kage.core.router import ExecutorType, RouteResult
         from kage.executor import LocalExecutor
+
+        if route is None:
+            route = self._router.route(cmd.command)
 
         cmd.status = CommandStatus.RUNNING
         cmd.started_at = utcnow()
 
         self.console.print("[status.running]Running...[/status.running]")
 
-        executor = LocalExecutor()
+        executor = None
+
+        # Select executor based on routing
+        if route.executor_type == ExecutorType.KALI_MCP:
+            try:
+                from kage.executor.kali import KaliExecutor, KaliMCPError
+
+                if self._kali_executor is None:
+                    self._kali_executor = KaliExecutor(
+                        servers=dict(self.config.kali.servers),
+                    )
+                executor = self._kali_executor
+            except Exception as e:
+                if route.fallback_to_local or self.config.kali.fallback_to_local:
+                    self.console.print(
+                        f"[warning]Kali MCP unavailable ({e}). Falling back to local.[/warning]"
+                    )
+                    executor = LocalExecutor()
+                else:
+                    cmd.status = CommandStatus.FAILED
+                    cmd.stderr = f"Kali MCP unavailable: {e}"
+                    cmd.completed_at = utcnow()
+                    self.session.commands.append(cmd)
+                    self.console.print(f"[error]Kali MCP unavailable: {e}[/error]")
+                    return
+
+        if executor is None:
+            executor = LocalExecutor()
 
         try:
             result = await executor.execute(cmd.command, timeout=cmd.timeout)
@@ -1532,10 +1710,47 @@ class ChatSession:
                 )
 
         except Exception as e:
-            cmd.status = CommandStatus.FAILED
-            cmd.stderr = str(e)
-            cmd.completed_at = utcnow()
-            self.console.print(f"[error]Failed: {e}[/error]")
+            # MCP fallback: if Kali execution failed, try local
+            if (
+                route
+                and route.executor_type == ExecutorType.KALI_MCP
+                and (route.fallback_to_local or self.config.kali.fallback_to_local)
+            ):
+                self.console.print(
+                    f"[warning]Kali MCP failed ({e}). Falling back to local...[/warning]"
+                )
+                try:
+                    fallback = LocalExecutor()
+                    result = await fallback.execute(cmd.command, timeout=cmd.timeout)
+                    cmd.exit_code = result.exit_code
+                    cmd.stdout = result.stdout
+                    cmd.stderr = result.stderr
+                    cmd.status = (
+                        CommandStatus.COMPLETED if not result.timed_out
+                        else CommandStatus.TIMEOUT
+                    )
+                    cmd.completed_at = utcnow()
+                    if result.stdout:
+                        self.console.print(
+                            Panel(
+                                result.stdout[:2000],
+                                title="[panel.title]Output (local fallback)[/panel.title]",
+                                border_style="panel.border",
+                            )
+                        )
+                    self.console.print(
+                        f"[status.completed]Completed via local (exit: {result.exit_code})[/status.completed]"
+                    )
+                except Exception as e2:
+                    cmd.status = CommandStatus.FAILED
+                    cmd.stderr = f"MCP: {e} | Local fallback: {e2}"
+                    cmd.completed_at = utcnow()
+                    self.console.print(f"[error]All executors failed: {e2}[/error]")
+            else:
+                cmd.status = CommandStatus.FAILED
+                cmd.stderr = str(e)
+                cmd.completed_at = utcnow()
+                self.console.print(f"[error]Failed: {e}[/error]")
 
         # Add to session history
         self.session.commands.append(cmd)
@@ -1567,10 +1782,26 @@ class ChatSession:
         return False
 
     async def _process_message(self, user_input: str) -> None:
-        """Process a user message and generate response."""
+        """Process a user message with intent detection and generate response."""
         if not self.conversation:
             self.console.print("[error]AI not connected. Restart session.[/error]")
             return
+
+        # --- Intent detection ---
+        intent_result = classify_intent(user_input)
+
+        # Show intent badge for non-chat intents
+        if intent_result.intent != Intent.CHAT:
+            intent_label = {
+                Intent.SECURITY: "[red]⚡ security[/red]",
+                Intent.DEVELOPMENT: "[green]⚙ development[/green]",
+                Intent.SYSTEM: "[blue]🖥 system[/blue]",
+            }.get(intent_result.intent, "")
+            self.console.print(f"\n[muted]Intent:[/muted] {intent_label}")
+
+        # --- Scope auto-prompt for security intent ---
+        if intent_result.intent == Intent.SECURITY and not self.session.scope.targets:
+            self._check_and_prompt_scope(user_input)
 
         self.console.print()
         self.console.print("[assistant]KAGE:[/assistant] ", end="")
@@ -1587,8 +1818,13 @@ class ChatSession:
 
             self.console.print()  # Newline after streaming
 
-            # Store any suggested commands
+            # --- Tag commands with routing info ---
             if commands:
+                for cmd in commands:
+                    route = self._router.route(cmd.command)
+                    if route.executor_type == ExecutorType.KALI_MCP:
+                        cmd.environment = ExecutionEnvironment.KALI_MCP
+
                 self._pending_commands.extend(commands)
                 self.console.print()
                 self.console.print(
