@@ -179,15 +179,19 @@ def validate_plugin_code(code: str) -> tuple[bool, list[str]]:
 
     for node in ast.walk(tree):
         # Check for dangerous function calls
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
-                if node.func.id in ("eval", "exec", "compile", "__import__"):
-                    issues.append(f"Line {node.lineno}: Use of '{node.func.id}' is restricted")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("eval", "exec", "compile", "__import__")
+        ):
+            issues.append(f"Line {node.lineno}: Use of '{node.func.id}' is restricted")
 
         # Check for dangerous attribute access
-        if isinstance(node, ast.Attribute):
-            if node.attr in ("__class__", "__bases__", "__subclasses__", "__globals__"):
-                issues.append(f"Line {node.lineno}: Access to '{node.attr}' is restricted")
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in ("__class__", "__bases__", "__subclasses__", "__globals__")
+        ):
+            issues.append(f"Line {node.lineno}: Access to '{node.attr}' is restricted")
 
         # Check for import statements
         if isinstance(node, ast.Import):
@@ -195,8 +199,11 @@ def validate_plugin_code(code: str) -> tuple[bool, list[str]]:
                 if alias.name in BLOCKED_IMPORTS:
                     issues.append(f"Line {node.lineno}: Import of '{alias.name}' is blocked")
 
-        if isinstance(node, ast.ImportFrom):
-            if node.module and node.module.split(".")[0] in BLOCKED_IMPORTS:
-                issues.append(f"Line {node.lineno}: Import from '{node.module}' is blocked")
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".")[0] in BLOCKED_IMPORTS
+        ):
+            issues.append(f"Line {node.lineno}: Import from '{node.module}' is blocked")
 
     return len(issues) == 0, issues

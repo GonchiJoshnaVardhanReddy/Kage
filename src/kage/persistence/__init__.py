@@ -3,6 +3,7 @@
 from kage.persistence.config import (
     KageConfig,
     LLMConfig,
+    MCPServerConfig,
     SecurityConfig,
     SessionConfig,
     UIConfig,
@@ -15,6 +16,7 @@ __all__ = [
     "AutoSaveSession",
     "KageConfig",
     "LLMConfig",
+    "MCPServerConfig",
     "SecurityConfig",
     "SessionConfig",
     "SessionStorage",

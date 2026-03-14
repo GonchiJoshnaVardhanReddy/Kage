@@ -104,6 +104,10 @@ class ReconPlugin(BasePlugin):
             category="reconnaissance",
         )
 
+    def recon_scan(self, target: str) -> dict[str, str]:
+        """Example manifest-declared plugin tool executor."""
+        return {"status": "ok", "target": target}
+
     def _port_scan(
         self,
         target: str,

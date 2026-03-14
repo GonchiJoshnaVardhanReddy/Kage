@@ -6,10 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-import aiofiles
-
 from kage.core.models import AuditEntry
 from kage.persistence.config import get_data_dir
+from kage.third_party import aiofiles
 
 
 class AuditLogger:

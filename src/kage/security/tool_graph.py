@@ -96,25 +96,6 @@ def register_tools_for_stage(stage: str, tools: Iterable[str]) -> None:
         register_tool(stage, tool)
 
 
-def extend_graph_from_mcp_discovery(
-    tools: Iterable[str],
-    stage_hint: str | None = None,
-) -> None:
-    """Extend the graph from MCP-discovered tool names.
-
-    If ``stage_hint`` is provided, all discovered tools are registered there.
-    Otherwise, unknown tools are defaulted to reconnaissance to keep them
-    available for planning until a better stage is known.
-    """
-    if stage_hint:
-        register_tools_for_stage(stage_hint, tools)
-        return
-
-    for tool in tools:
-        if get_stage_for_tool(tool) is None:
-            register_tool("reconnaissance", tool)
-
-
 def generate_workflow_plan(user_request: str) -> list[tuple[str, str]]:
     """Generate a stage/tool workflow plan from a user request."""
     text = user_request.lower()

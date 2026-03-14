@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import typer
 from rich.console import Console
 
+from kage.ai.base import BaseLLMProvider
+from kage.cli.commands.hack import hack_app
+from kage.cli.commands.plugin import plugin_app
 from kage.cli.ui.themes import KAGE_LOGO, KAGE_LOGO_SMALL, KAGE_THEME
 from kage.cli.wizard.setup import _is_embedding_model
 from kage.persistence.config import KageConfig
+from kage.reporting.export import OutputFormat
 from kage.version import __version__
 
 # Create main console with theme
@@ -34,7 +40,7 @@ def version_callback(value: bool) -> None:
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
-    version: bool = typer.Option(
+    _version: bool = typer.Option(
         False,
         "--version",
         "-v",
@@ -70,6 +76,44 @@ def setup() -> None:
     from kage.cli.wizard import run_setup_wizard
 
     run_setup_wizard(console)
+
+
+@app.command()
+def update(
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Update with development dependencies.",
+    ),
+) -> None:
+    """Update an existing Kage installation from this repository checkout."""
+    import os
+    import subprocess
+    import sys
+
+    repo_root = os.getcwd()
+    extras = "[dev]" if dev else ""
+    install_target = f"{repo_root}{extras}"
+
+    python_exe = sys.executable
+    console.print("[info]Updating Kage...[/info]")
+    console.print(f"[muted]Using Python: {python_exe}[/muted]")
+    console.print(f"[muted]Target: {install_target}[/muted]")
+
+    result = subprocess.run(
+        [python_exe, "-m", "pip", "install", "-e", install_target],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        if result.stderr:
+            console.print(result.stderr[:1200], highlight=False)
+        console.print("[error]Update failed.[/error]")
+        raise typer.Exit(1)
+
+    console.print("[success]✓ Kage updated successfully[/success]")
+    console.print("[muted]Run `kage --version` to verify.[/muted]")
 
 
 @app.command()
@@ -130,7 +174,8 @@ def launch(
     console.print()
 
     # Test connection and get models
-    async def test_and_get_models():
+    async def test_and_get_models() -> tuple[bool, list[str]]:
+        p: BaseLLMProvider
         if provider == "ollama":
             p = OllamaProvider(base_url=base_url)
         elif provider == "lmstudio":
@@ -285,16 +330,10 @@ def config_cmd(
     ),
 ) -> None:
     """Manage Kage configuration."""
+    import os
+    import subprocess
+
     config = KageConfig.load()
-
-    if show or (not edit and not reset):
-        import yaml
-
-        console.print("[header]Current Configuration[/header]")
-        console.print()
-        console.print(yaml.dump(config.model_dump(mode="json"), default_flow_style=False))
-        console.print()
-        console.print(f"[muted]Config file: {config.get_config_path()}[/muted]")
 
     if reset:
         from rich.prompt import Confirm
@@ -303,6 +342,42 @@ def config_cmd(
             new_config = KageConfig()
             new_config.save()
             console.print("[success]Configuration reset.[/success]")
+        return
+
+    if edit:
+        config_path = config.get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not config_path.exists():
+            config.save()
+        editor = os.environ.get("EDITOR")
+        try:
+            if editor:
+                subprocess.run([editor, str(config_path)], check=False)
+            else:
+                startfile_fn = getattr(os, "startfile", None)
+                if startfile_fn is None:
+                    raise RuntimeError("No default file opener is available on this platform.")
+                startfile_fn(str(config_path))
+            console.print(f"[success]Opened config: {config_path}[/success]")
+        except Exception as e:
+            console.print(f"[error]Could not open config in editor: {e}[/error]")
+        return
+
+    if show:
+        import yaml
+
+        console.print("[header]Current Configuration[/header]")
+        console.print()
+        console.print(yaml.dump(config.model_dump(mode="json"), default_flow_style=False))
+        console.print()
+        console.print(f"[muted]Config file: {config.get_config_path()}[/muted]")
+        return
+
+    console.print("[header]Configuration[/header]")
+    console.print("[muted]Use --show to view config or --edit to update config.yaml directly.[/muted]")
+    console.print()
+    console.print(f"[muted]Config file: {config.get_config_path()}[/muted]")
+
 
 
 # Rename to avoid conflict with typer
@@ -433,12 +508,14 @@ def report(
         "-o",
         help="Output file path.",
     ),
-    format: str = typer.Option(
-        "markdown",
-        "--format",
-        "-f",
-        help="Output format: markdown, html, pdf",
-    ),
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output format: markdown, html, pdf",
+        ),
+    ] = "markdown",
     template: str | None = typer.Option(
         None,
         "--template",
@@ -476,15 +553,17 @@ def report(
         if output:
             output_path = Path(output)
         else:
-            filename = get_default_filename(session, format)
+            filename = get_default_filename(session, output_format)
             output_path = Path.cwd() / filename
 
         # Generate report
-        console.print(f"[info]Generating {format} report...[/info]")
+        console.print(f"[info]Generating {output_format} report...[/info]")
 
         try:
             exporter = ReportExporter()
-            result_path = asyncio.run(exporter.export(session, output_path, format, template))
+            result_path = asyncio.run(
+                exporter.export(session, output_path, output_format, template)
+            )
             console.print(f"[success]Report generated: {result_path}[/success]")
 
             # Show summary
@@ -500,7 +579,7 @@ def report(
 
         except Exception as e:
             console.print(f"[error]Failed to generate report: {e}[/error]")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     elif action == "list":
         # List available templates
@@ -543,14 +622,7 @@ def report(
         raise typer.Exit(1)
 
 
-# Import and register plugin subcommand app
-from kage.cli.commands.plugin import plugin_app
-
 app.add_typer(plugin_app, name="plugin")
-
-# Import and register hack mode command
-from kage.cli.commands.hack import hack_app
-
 app.add_typer(hack_app, name="hack")
 
 

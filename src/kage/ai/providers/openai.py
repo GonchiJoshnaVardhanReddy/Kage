@@ -9,8 +9,6 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from kage.ai.base import (
     BaseLLMProvider,
     LLMConfig,
@@ -18,6 +16,8 @@ from kage.ai.base import (
     LLMResponse,
     StreamChunk,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -128,49 +128,52 @@ class OpenAIProvider(BaseLLMProvider):
             raw=data,
         )
 
-    async def stream(
+    def stream(
         self,
         messages: list[LLMMessage],
         config: LLMConfig,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion response from OpenAI."""
-        client = await self._get_client()
-        body = self._build_request_body(messages, config, stream=True)
+        async def _stream() -> AsyncIterator[StreamChunk]:
+            client = await self._get_client()
+            body = self._build_request_body(messages, config, stream=True)
 
-        async with client.stream("POST", "/chat/completions", json=body) as response:
-            response.raise_for_status()
+            async with client.stream("POST", "/chat/completions", json=body) as response:
+                response.raise_for_status()
 
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
 
-                # SSE format: "data: {...}" or "data: [DONE]"
-                if line.startswith("data: "):
-                    data_str = line[6:]
+                    # SSE format: "data: {...}" or "data: [DONE]"
+                    if line.startswith("data: "):
+                        data_str = line[6:]
 
-                    if data_str == "[DONE]":
-                        break
-
-                    try:
-                        data = json.loads(data_str)
-                        choice = data.get("choices", [{}])[0]
-                        delta = choice.get("delta", {})
-
-                        content = delta.get("content", "") or ""
-                        finish_reason = choice.get("finish_reason")
-                        tool_calls = delta.get("tool_calls")
-
-                        yield StreamChunk(
-                            content=content,
-                            finish_reason=finish_reason,
-                            tool_calls=tool_calls,
-                        )
-
-                        if finish_reason:
+                        if data_str == "[DONE]":
                             break
 
-                    except json.JSONDecodeError:
-                        continue
+                        try:
+                            data = json.loads(data_str)
+                            choice = data.get("choices", [{}])[0]
+                            delta = choice.get("delta", {})
+
+                            content = delta.get("content", "") or ""
+                            finish_reason = choice.get("finish_reason")
+                            tool_calls = delta.get("tool_calls")
+
+                            yield StreamChunk(
+                                content=content,
+                                finish_reason=finish_reason,
+                                tool_calls=tool_calls,
+                            )
+
+                            if finish_reason:
+                                break
+
+                        except json.JSONDecodeError:
+                            continue
+
+        return _stream()
 
 
 class LMStudioProvider(OpenAIProvider):

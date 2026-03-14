@@ -32,7 +32,7 @@ def get_plugin_dirs() -> list[Path]:
 
 
 @plugin_app.command("list")
-def list_plugins():
+def list_plugins() -> None:
     """List available plugins."""
     manager = PluginManager(get_plugin_dirs())
     discovered = manager.discover_plugins()
@@ -51,7 +51,7 @@ def list_plugins():
     table.add_column("Description", style="dim")
     table.add_column("Capabilities", style="magenta")
 
-    for plugin_dir, schema in discovered:
+    for _plugin_dir, schema in discovered:
         cap_count = len(schema.capabilities)
         table.add_row(
             schema.name,
@@ -65,12 +65,12 @@ def list_plugins():
 
 
 @plugin_app.command("info")
-def plugin_info(name: str = typer.Argument(..., help="Plugin name")):
+def plugin_info(name: str = typer.Argument(..., help="Plugin name")) -> None:
     """Show detailed plugin information."""
     manager = PluginManager(get_plugin_dirs())
     discovered = manager.discover_plugins()
 
-    for plugin_dir, schema in discovered:
+    for _plugin_dir, schema in discovered:
         if schema.name == name:
             console.print(f"\n[cyan bold]{schema.name}[/cyan bold] v{schema.version}")
             console.print(f"[dim]{schema.description}[/dim]\n")
@@ -112,7 +112,7 @@ def plugin_info(name: str = typer.Argument(..., help="Plugin name")):
 
 
 @plugin_app.command("load")
-def load_plugin(name: str = typer.Argument(..., help="Plugin name to load")):
+def load_plugin(name: str = typer.Argument(..., help="Plugin name to load")) -> None:
     """Load and validate a plugin."""
     manager = PluginManager(get_plugin_dirs())
     discovered = manager.discover_plugins()
@@ -142,7 +142,7 @@ def load_plugin(name: str = typer.Argument(..., help="Plugin name to load")):
 
 
 @plugin_app.command("validate")
-def validate_plugin(path: str = typer.Argument(..., help="Path to plugin directory")):
+def validate_plugin(path: str = typer.Argument(..., help="Path to plugin directory")) -> None:
     """Validate a plugin without loading it."""
     from kage.plugins.sandbox import validate_plugin_code
     from kage.plugins.schema import PluginSchema
@@ -163,7 +163,7 @@ def validate_plugin(path: str = typer.Argument(..., help="Path to plugin directo
         console.print("[green]✓ plugin.yaml is valid[/green]")
     except Exception as e:
         console.print(f"[red]✗ Invalid plugin.yaml: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     # Validate code
     plugin_file = plugin_dir / schema.entry_point
@@ -195,7 +195,7 @@ def create_plugin(
         "-o",
         help="Output directory for the plugin",
     ),
-):
+) -> None:
     """Create a new plugin scaffold."""
     from kage.plugins.schema import CapabilitySchema, PluginSchema
 

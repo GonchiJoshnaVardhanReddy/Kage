@@ -22,7 +22,6 @@ from kage.security.tool_checker import (
     get_install_suggestion,
 )
 from kage.security.tool_graph import (
-    extend_graph_from_mcp_discovery,
     generate_workflow_plan,
     get_next_stage,
     get_stage_for_tool,
@@ -42,7 +41,6 @@ __all__ = [
     "ScopeValidationResult",
     "ScopeValidator",
     "classify_command_category",
-    "extend_graph_from_mcp_discovery",
     "generate_workflow_plan",
     "get_next_stage",
     "get_stage_for_tool",

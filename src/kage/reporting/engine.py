@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2.loaders import BaseLoader
 
 from kage.core.models import Session, Severity
 from kage.reporting.findings import ReportData
+from kage.third_party import load_weasyprint_html
 
 
 def get_templates_dir() -> Path:
@@ -122,7 +124,7 @@ def format_datetime(dt: Any, fmt: str = "%Y-%m-%d %H:%M:%S UTC") -> str:
     if dt is None:
         return ""
     if hasattr(dt, "strftime"):
-        return dt.strftime(fmt)
+        return cast(str, dt.strftime(fmt))
     return str(dt)
 
 
@@ -165,7 +167,10 @@ class ReportEngine:
     def list_templates(self) -> list[str]:
         """List available report templates."""
         templates = []
-        for loader_path in self.env.loader.searchpath:
+        loader: BaseLoader | None = self.env.loader
+        if not isinstance(loader, FileSystemLoader):
+            return []
+        for loader_path in loader.searchpath:
             path = Path(loader_path)
             for template_file in path.rglob("*.j2"):
                 rel_path = template_file.relative_to(path)
@@ -185,11 +190,11 @@ class ReportEngine:
         """Render report as PDF. Requires weasyprint: pip install kage[pdf]"""
         html_content = self.render_html(session, template_name)
         try:
-            from weasyprint import HTML
+            HTML = load_weasyprint_html()
 
             HTML(string=html_content).write_pdf(output_path)
             return output_path
-        except ImportError:
+        except ImportError as e:
             raise RuntimeError(
                 "PDF export requires WeasyPrint. Install with: pip install kage[pdf]"
-            )
+            ) from e

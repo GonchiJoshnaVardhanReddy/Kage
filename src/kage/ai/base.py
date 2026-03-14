@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -60,7 +60,7 @@ class ToolDefinition(BaseModel):
 
     name: str
     description: str
-    parameters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
     def to_openai_format(self) -> dict[str, Any]:
         """Convert to OpenAI function calling format."""
@@ -97,7 +97,7 @@ class BaseLLMProvider(ABC):
         ...
 
     @abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: list[LLMMessage],
         config: LLMConfig,
@@ -109,6 +109,14 @@ class BaseLLMProvider(ABC):
     async def check_connection(self) -> bool:
         """Check if the provider is reachable and configured correctly."""
         ...
+
+    async def close(self) -> None:
+        """Close any provider resources."""
+        return None
+
+    async def list_models(self) -> list[str]:
+        """List available models, if the provider supports it."""
+        return []
 
     def _convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
         """Convert LLMMessage objects to provider-specific format."""

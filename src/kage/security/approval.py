@@ -58,7 +58,7 @@ class ApprovalWorkflow:
 
         Returns ApprovalResult with decision and any warnings/blocks.
         """
-        warnings = []
+        warnings: list[str] = []
 
         # Step 1: Safe mode check
         safe_result = self.safe_mode_filter.check(command.command)
@@ -89,7 +89,7 @@ class ApprovalWorkflow:
                 warnings.append(f"  Suggestion: {safe_result.suggestion}")
 
         # Step 2: Scope check
-        scope_results = []
+        scope_results: list[ScopeValidationResult] = []
         if self.scope_enforcement and self.scope_validator.scope.targets:
             in_scope, scope_results = self.scope_validator.validate_command(command.command)
 

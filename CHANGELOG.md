@@ -70,5 +70,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Session management (save/load/resume)
 - Report generation (Markdown, HTML)
 - Plugin system with sandboxed execution
-- MCP (Model Context Protocol) integration
 - Audit logging with hash chain for tamper detection

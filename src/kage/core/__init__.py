@@ -1,5 +1,6 @@
 """Core module for Kage."""
 
+from kage.core.hooks import HookDispatchResult, HookEvent, HookManager, HookRegistration
 from kage.core.intent import Intent, IntentResult, classify_intent, needs_ai_classification
 from kage.core.models import (
     AuditEntry,
@@ -16,8 +17,39 @@ from kage.core.models import (
     Severity,
     Target,
 )
+from kage.core.observability import (
+    TraceEvent,
+    TraceRecorder,
+    TraceSeverity,
+    export_json,
+    export_jsonl,
+)
 from kage.core.planner import ExecutionPlan, PlanStatus, PlanStep
+from kage.core.policy import (
+    PolicyAction,
+    PolicyContext,
+    PolicyDecision,
+    PolicyEngine,
+    PolicyRegistry,
+    PolicyRule,
+    PolicySeverity,
+)
 from kage.core.router import CommandRouter, ExecutorType, RouteResult
+from kage.core.tools import (
+    ToolExecutionError,
+    ToolExecutionOrigin,
+    ToolExecutionPlan,
+    ToolExecutionResult,
+    ToolExecutorBinding,
+    ToolExecutorKind,
+    ToolPermissionMetadata,
+    ToolRegistry,
+    ToolRegistryError,
+    ToolSchema,
+    ToolValidationError,
+    ToolValidationResult,
+    ToolValidationStrategy,
+)
 
 __all__ = [
     "AuditEntry",
@@ -28,6 +60,10 @@ __all__ = [
     "ExecutionPlan",
     "ExecutorType",
     "Finding",
+    "HookDispatchResult",
+    "HookEvent",
+    "HookManager",
+    "HookRegistration",
     "Intent",
     "IntentResult",
     "Message",
@@ -36,11 +72,36 @@ __all__ = [
     "PlanStep",
     "PluginCapability",
     "PluginMetadata",
+    "PolicyAction",
+    "PolicyContext",
+    "PolicyDecision",
+    "PolicyEngine",
+    "PolicyRegistry",
+    "PolicyRule",
+    "PolicySeverity",
     "RouteResult",
     "Scope",
     "Session",
     "Severity",
     "Target",
+    "TraceEvent",
+    "TraceRecorder",
+    "TraceSeverity",
+    "ToolExecutionError",
+    "ToolExecutionOrigin",
+    "ToolExecutionPlan",
+    "ToolExecutionResult",
+    "ToolExecutorBinding",
+    "ToolExecutorKind",
+    "ToolPermissionMetadata",
+    "ToolRegistry",
+    "ToolRegistryError",
+    "ToolSchema",
+    "ToolValidationError",
+    "ToolValidationResult",
+    "ToolValidationStrategy",
     "classify_intent",
+    "export_json",
+    "export_jsonl",
     "needs_ai_classification",
 ]

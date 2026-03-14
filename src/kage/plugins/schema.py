@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CapabilitySchema(BaseModel):
@@ -19,6 +20,30 @@ class CapabilitySchema(BaseModel):
     dangerous: bool = False
     requires_approval: bool = True
     category: str = "general"
+
+
+class PluginToolSchema(BaseModel):
+    """Schema for a ToolRegistry-bound tool declared in plugin.yaml."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    executor: str | None = None
+    dangerous: bool = False
+    requires_approval: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("Tool name cannot be empty")
+        if "." in normalized:
+            raise ValueError("Manifest tool name must be local (do not include namespace prefix)")
+        if not re.match(r"^[a-z][a-z0-9_-]*$", normalized):
+            raise ValueError("Tool name must match ^[a-z][a-z0-9_-]*$")
+        return normalized
 
 
 class PluginSchema(BaseModel):
@@ -35,6 +60,7 @@ class PluginSchema(BaseModel):
     required_tools: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
     capabilities: list[CapabilitySchema] = Field(default_factory=list)
+    tools: list[PluginToolSchema] = Field(default_factory=list)
 
     # Sandbox settings
     allowed_imports: list[str] = Field(default_factory=list)

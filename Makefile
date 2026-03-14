@@ -1,4 +1,4 @@
-.PHONY: install dev test lint format clean setup uninstall
+.PHONY: install dev test lint format clean setup uninstall update
 
 # Full installation (creates venv, installs, adds to PATH)
 setup:
@@ -27,16 +27,17 @@ dev:
 # Uninstall kage
 uninstall:
 ifeq ($(OS),Windows_NT)
-	@echo Removing Kage...
-	@if exist "$(LOCALAPPDATA)\Kage" rmdir /s /q "$(LOCALAPPDATA)\Kage"
-	@pip uninstall -y kage 2>nul || echo Kage pip package not found
-	@echo Kage uninstalled. Remove PATH entry manually if needed.
+	powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1 -Yes
 else
-	@echo "Removing Kage..."
-	@rm -rf ~/.local/share/kage
-	@rm -f ~/.local/bin/kage
-	@pip uninstall -y kage 2>/dev/null || echo "Kage pip package not found"
-	@echo "Kage uninstalled. Remove PATH entry from shell rc file if needed."
+	bash scripts/uninstall.sh --yes
+endif
+
+# Update kage
+update:
+ifeq ($(OS),Windows_NT)
+	powershell -ExecutionPolicy Bypass -File scripts/update.ps1
+else
+	bash scripts/update.sh
 endif
 
 # Run tests

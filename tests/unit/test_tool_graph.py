@@ -1,12 +1,12 @@
 """Tests for security tool capability graph."""
 
 from kage.security.tool_graph import (
-    extend_graph_from_mcp_discovery,
     generate_workflow_plan,
     get_next_stage,
     get_stage_for_tool,
     get_tools_for_stage,
     register_tool,
+    register_tools_for_stage,
 )
 
 
@@ -35,14 +35,10 @@ def test_dynamic_register_tool() -> None:
     assert get_stage_for_tool("feroxbuster") == "web_enumeration"
 
 
-def test_extend_graph_from_mcp_discovery_defaults_to_recon() -> None:
-    extend_graph_from_mcp_discovery(["customreconx"])
+def test_dynamic_register_multiple_tools() -> None:
+    register_tools_for_stage("reconnaissance", ["customreconx", "newsqltool"])
     assert get_stage_for_tool("customreconx") == "reconnaissance"
-
-
-def test_extend_graph_from_mcp_with_stage_hint() -> None:
-    extend_graph_from_mcp_discovery(["newsqltool"], stage_hint="sql_injection_testing")
-    assert get_stage_for_tool("newsqltool") == "sql_injection_testing"
+    assert get_stage_for_tool("newsqltool") == "reconnaissance"
 
 
 def test_generate_workflow_plan_scan_request() -> None:

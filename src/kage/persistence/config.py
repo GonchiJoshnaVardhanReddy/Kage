@@ -21,12 +21,7 @@ def get_config_dir() -> Path:
     if env_dir:
         return Path(env_dir).expanduser()
 
-    if os.name == "nt":  # Windows
-        base = Path(os.environ.get("APPDATA", "~"))
-    else:  # Linux/macOS
-        base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config"))
-
-    return base.expanduser() / "kage"
+    return Path("~/.kage").expanduser()
 
 
 def get_data_dir() -> Path:
@@ -35,9 +30,9 @@ def get_data_dir() -> Path:
     if env_dir:
         return Path(env_dir).expanduser()
 
-    if os.name == "nt":  # Windows
+    if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", "~"))
-    else:  # Linux/macOS
+    else:
         base = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share"))
 
     return base.expanduser() / "kage"
@@ -100,32 +95,36 @@ class UIConfig(BaseModel):
     markdown_code_theme: str = "monokai"
 
 
+class SlashSuggestionBoostsConfig(BaseModel):
+    """Context-aware slash suggestion boost weights."""
+
+    pending_commands: int = 60
+    pending_run: int = 55
+    pending_save: int = 10
+    findings: int = 45
+    findings_export: int = 35
+    status: int = 40
+    scope_hint: int = 10
+
+
+class ChatConfig(BaseModel):
+    """Chat session UX and ranking settings."""
+
+    slash_suggestion_boosts: SlashSuggestionBoostsConfig = Field(
+        default_factory=SlashSuggestionBoostsConfig
+    )
+
+
 class MCPServerConfig(BaseModel):
-    """Configuration for a single MCP server."""
+    """One MCP server configuration."""
 
     name: str
-    transport: str = "stdio"  # stdio, sse, docker
-    command: str | None = None  # For stdio transport
-    url: str | None = None  # For SSE transport
-    docker_image: str | None = None  # For docker transport
+    transport: str = "stdio"
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    url: str | None = None
+    timeout: float = 30.0
     env: dict[str, str] = Field(default_factory=dict)
-    enabled: bool = True
-    auto_start: bool = True
-
-
-class MCPConfig(BaseModel):
-    """MCP (Model Context Protocol) configuration."""
-
-    enabled: bool = True
-    auto_discover: bool = True
-    docker_enabled: bool = True
-    servers: list[MCPServerConfig] = Field(default_factory=list)
-    discovery_paths: list[str] = Field(
-        default_factory=lambda: [
-            "~/.config/mcp",
-            "~/.mcp",
-        ]
-    )
 
 
 class HackModeConfig(BaseModel):
@@ -135,7 +134,7 @@ class HackModeConfig(BaseModel):
     auto_report: bool = True
     report_format: str = "html"
     max_concurrent_tasks: int = 5
-    default_timeout: int = 3600  # 1 hour
+    default_timeout: int = 3600
     phases: list[str] = Field(
         default_factory=lambda: [
             "planning",
@@ -145,18 +144,6 @@ class HackModeConfig(BaseModel):
             "reporting",
         ]
     )
-
-
-class KaliMCPConfig(BaseModel):
-    """Kali MCP server configuration for remote security tool execution."""
-
-    enabled: bool = False
-    servers: dict[str, str] = Field(
-        default_factory=dict,
-        description="Map of server names to URLs, e.g. {'kali_local': 'http://127.0.0.1:5000'}",
-    )
-    fallback_to_local: bool = True
-    default_timeout: int = 600
 
 
 class KageConfig(BaseSettings):
@@ -172,9 +159,9 @@ class KageConfig(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
-    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    chat: ChatConfig = Field(default_factory=ChatConfig)
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     hack_mode: HackModeConfig = Field(default_factory=HackModeConfig)
-    kali: KaliMCPConfig = Field(default_factory=KaliMCPConfig)
 
     first_run: bool = True
 
@@ -192,7 +179,7 @@ class KageConfig(BaseSettings):
             return cls()
 
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             return cls(**data)
         except yaml.YAMLError as e:
@@ -206,10 +193,8 @@ class KageConfig(BaseSettings):
         """Save configuration to file."""
         config_path = self.get_config_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
-
         data = self.model_dump(mode="json")
-
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
     def update(self, **kwargs: Any) -> None:

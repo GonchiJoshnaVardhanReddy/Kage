@@ -131,13 +131,13 @@ DEPENDENCIES: list[Dependency] = [
         install_hint="go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
         category="vuln",
     ),
-    # Docker (for MCP servers)
+    # Docker support
     Dependency(
         name="docker",
         check=check_docker,
         required=False,
         install_hint="Install Docker Desktop or docker-ce",
-        category="mcp",
+        category="container",
     ),
     # Optional Python packages
     Dependency(
@@ -224,7 +224,7 @@ class DependencyChecker:
             "vuln",
             "bruteforce",
             "network",
-            "mcp",
+            "container",
             "reporting",
         ]
 

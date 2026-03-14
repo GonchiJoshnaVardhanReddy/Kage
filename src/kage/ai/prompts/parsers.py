@@ -192,8 +192,8 @@ def _looks_like_command(line: str) -> bool:
 
 
 def parse_tool_output_for_findings(
-    tool: str,
-    output: str,
+    _tool: str,
+    _output: str,
     ai_analysis: str | None = None,
 ) -> list[ParsedFinding]:
     """Parse tool output and AI analysis to extract findings."""

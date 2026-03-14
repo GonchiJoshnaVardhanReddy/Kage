@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -70,7 +70,7 @@ class BaseExecutor(ABC):
         ...
 
     @abstractmethod
-    async def execute_streaming(
+    def execute_streaming(
         self,
         command: str,
         timeout: int = 300,
@@ -88,8 +88,8 @@ class BaseExecutor(ABC):
     async def execute_with_callback(
         self,
         command: str,
-        on_stdout: callable | None = None,
-        on_stderr: callable | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
         timeout: int = 300,
         working_dir: str | None = None,
     ) -> ExecutionResult:

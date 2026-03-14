@@ -14,7 +14,7 @@ class StreamState:
     """State accumulated during streaming."""
 
     content: str = ""
-    tool_calls: list[dict] = field(default_factory=list)
+    tool_calls: list[dict[str, object]] = field(default_factory=list)
     finish_reason: str | None = None
     chunks_received: int = 0
 
@@ -146,7 +146,7 @@ async def stream_to_console(
     provider: BaseLLMProvider,
     messages: list[LLMMessage],
     config: LLMConfig,
-    print_fn: Callable[[str], None] = print,
+    print_fn: Callable[..., None] = print,
 ) -> str:
     """Simple helper to stream response directly to console."""
     handler = StreamHandler(

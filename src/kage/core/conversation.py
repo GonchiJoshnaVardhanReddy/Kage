@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING
 
 from kage.ai.base import BaseLLMProvider, LLMConfig, LLMMessage
 from kage.ai.prompts import build_context_message, build_system_prompt, parse_response
-from kage.ai.streaming import StreamHandler
-from kage.core.models import Command, Finding, Message, MessageRole, Session
+from kage.ai.streaming import StreamHandler, StreamState
+from kage.core.models import Command, Finding, Message, MessageRole, Session, Severity
+from kage.core.tools import ToolExecutionPlan, plans_from_commands, plans_from_provider_tool_calls
 from kage.utils import utcnow
 
 if TYPE_CHECKING:
@@ -37,14 +38,17 @@ class ConversationManager:
         provider: BaseLLMProvider,
         config: KageConfig,
         session: Session,
+        llm_tools: list[dict[str, object]] | None = None,
     ) -> None:
         self.provider = provider
         self.config = config
         self.session = session
+        self._llm_tools = llm_tools
         self._llm_config = LLMConfig(
             model=config.llm.model,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
+            tools=llm_tools,
         )
 
     def _build_messages(
@@ -118,11 +122,11 @@ class ConversationManager:
         user_message: str,
         on_chunk: Callable[[str], None] | None = None,
         additional_context: str | None = None,
-    ) -> tuple[str, list[Command]]:
+    ) -> tuple[str, list[Command], list[ToolExecutionPlan]]:
         """Send a message and get a response.
 
         Returns:
-            Tuple of (response text, list of suggested commands)
+            Tuple of (response text, legacy command list, structured tool plans)
         """
         # Record user message
         self.session.messages.append(Message(role=MessageRole.USER, content=user_message))
@@ -137,6 +141,7 @@ class ConversationManager:
             on_chunk=on_chunk,
         )
 
+        state = StreamState()
         try:
             state = await handler.stream_response(messages, self._llm_config)
             response_text = state.content
@@ -163,13 +168,17 @@ class ConversationManager:
             )
             commands.append(command)
 
-        return response_text, commands
+        plans_from_tools = plans_from_provider_tool_calls(state.tool_calls)
+        legacy_plans = plans_from_commands(commands)
+        plans = plans_from_tools if plans_from_tools else legacy_plans
+
+        return response_text, commands, plans
 
     async def send_message_sync(
         self,
         user_message: str,
         additional_context: str | None = None,
-    ) -> tuple[str, list[Command]]:
+    ) -> tuple[str, list[Command], list[ToolExecutionPlan]]:
         """Send a message without streaming (for simpler use cases)."""
         # Record user message
         self.session.messages.append(Message(role=MessageRole.USER, content=user_message))
@@ -197,7 +206,11 @@ class ConversationManager:
             )
             commands.append(command)
 
-        return response_text, commands
+        plans_from_tools = plans_from_provider_tool_calls(response.tool_calls)
+        legacy_plans = plans_from_commands(commands)
+        plans = plans_from_tools if plans_from_tools else legacy_plans
+
+        return response_text, commands, plans
 
     async def analyze_output(
         self,
@@ -236,9 +249,15 @@ If no significant findings, say "No significant findings."
 
             findings = []
             for f in parsed.findings:
+                severity_value = f.severity.lower()
+                severity = (
+                    Severity(severity_value)
+                    if severity_value in {"critical", "high", "medium", "low", "info"}
+                    else Severity.INFO
+                )
                 finding = Finding(
                     title=f.title,
-                    severity=f.severity.lower(),  # type: ignore
+                    severity=severity,
                     description=f.description,
                     evidence=f.evidence,
                     impact=f.impact,

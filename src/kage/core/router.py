@@ -1,9 +1,4 @@
-"""Command routing engine for Kage.
-
-Routes commands to the appropriate executor based on tool type:
-- Security tools → Kali MCP executor (with fallback)
-- Development/system tools → Local executor
-"""
+"""Command routing engine for Kage."""
 
 from __future__ import annotations
 
@@ -11,7 +6,7 @@ import logging
 import re
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from kage.core.intent import SECURITY_TOOLS
 
@@ -22,7 +17,6 @@ class ExecutorType(str, Enum):
     """Target executor for a command."""
 
     LOCAL = "local"
-    KALI_MCP = "kali_mcp"
 
 
 class RouteResult(BaseModel):
@@ -31,10 +25,6 @@ class RouteResult(BaseModel):
     executor_type: ExecutorType
     tool_name: str | None = None
     reasoning: str = ""
-    fallback_to_local: bool = Field(
-        default=False,
-        description="If True, fall back to local if MCP fails",
-    )
 
 
 # Tools that should ALWAYS run locally regardless of context
@@ -93,21 +83,11 @@ class CommandRouter:
 
     def __init__(
         self,
-        kali_available: bool = False,
         custom_security_tools: set[str] | None = None,
     ) -> None:
-        self._kali_available = kali_available
         self._security_tools = SECURITY_TOOLS.copy()
         if custom_security_tools:
             self._security_tools.update(custom_security_tools)
-
-    @property
-    def kali_available(self) -> bool:
-        return self._kali_available
-
-    @kali_available.setter
-    def kali_available(self, value: bool) -> None:
-        self._kali_available = value
 
     def route(self, command: str) -> RouteResult:
         """Determine which executor should handle this command."""
@@ -127,31 +107,17 @@ class CommandRouter:
                 reasoning=f"Local tool: {tool}",
             )
 
-        # Security tools → Kali MCP (if available)
+        # Security tools run locally
         if tool in self._security_tools:
-            if self._kali_available:
-                return RouteResult(
-                    executor_type=ExecutorType.KALI_MCP,
-                    tool_name=tool,
-                    reasoning=f"Security tool: {tool} → Kali MCP",
-                    fallback_to_local=True,
-                )
-            else:
-                logger.info(
-                    "Security tool '%s' would use Kali MCP but it's not available. "
-                    "Running locally.",
-                    tool,
-                )
-                return RouteResult(
-                    executor_type=ExecutorType.LOCAL,
-                    tool_name=tool,
-                    reasoning=f"Security tool: {tool} (Kali MCP unavailable, using local)",
-                )
+            return RouteResult(
+                executor_type=ExecutorType.LOCAL,
+                tool_name=tool,
+                reasoning=f"Security tool: {tool} → local",
+            )
 
         # Default: run locally
         return RouteResult(
             executor_type=ExecutorType.LOCAL,
             tool_name=tool,
             reasoning=f"Default routing: {tool} → local",
-            fallback_to_local=False,
         )

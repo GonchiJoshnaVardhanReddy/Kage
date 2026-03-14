@@ -67,6 +67,15 @@ class TestCLIBasics:
         )
         assert result.returncode == 0
 
+    def test_update_help(self):
+        """Test update command help."""
+        result = subprocess.run(
+            [sys.executable, "-m", "kage", "update", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "update" in result.stdout.lower()
 
 class TestReportCommand:
     """Tests for report command."""

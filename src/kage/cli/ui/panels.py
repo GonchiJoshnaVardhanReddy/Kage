@@ -1,6 +1,6 @@
 """Rich UI panels for Kage."""
 
-from rich.console import Group
+from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -170,7 +170,7 @@ def create_scope_panel(scope: Scope) -> Panel:
     for target in scope.targets:
         table.add_row(target.target_type, target.value, target.notes or "-")
 
-    content = [table]
+    content: list[RenderableType] = [table]
 
     if scope.excluded:
         content.append(Text())

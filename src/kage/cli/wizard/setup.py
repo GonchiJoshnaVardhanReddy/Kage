@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,8 +16,8 @@ from kage.ai.providers.openai import LMStudioProvider, OpenAIProvider
 from kage.cli.ui.themes import KAGE_LOGO, KAGE_THEME
 from kage.persistence.config import KageConfig, LLMConfig
 
-
 EMBEDDING_MODEL_KEYWORDS = {"embed", "embedding", "nomic-embed", "bge", "e5", "gte"}
+T = TypeVar("T")
 
 
 def _is_embedding_model(name: str) -> bool:
@@ -59,7 +61,7 @@ async def _test_openai_connection(base_url: str, api_key: str) -> tuple[bool, li
         await provider.close()
 
 
-def _run_async(coro):
+def _run_async(coro: Coroutine[Any, Any, T]) -> T:
     """Run async coroutine in sync context."""
     return asyncio.run(coro)
 

@@ -6,7 +6,7 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
-from typing import Any
+from typing import Literal
 from urllib.parse import urlparse
 
 from kage.core.models import Scope
@@ -27,7 +27,17 @@ class ScopeValidator:
 
     def __init__(self, scope: Scope) -> None:
         self.scope = scope
-        self._compiled_patterns: list[tuple[str, Any]] = []
+        self._compiled_patterns: list[
+            tuple[
+                Literal["ip", "cidr", "domain"],
+                ipaddress.IPv4Address
+                | ipaddress.IPv6Address
+                | ipaddress.IPv4Network
+                | ipaddress.IPv6Network
+                | re.Pattern[str],
+                str,
+            ]
+        ] = []
         self._compile_scope()
 
     def _compile_scope(self) -> None:
@@ -58,7 +68,7 @@ class ScopeValidator:
                     pattern = self._domain_to_regex(parsed.netloc)
                     self._compiled_patterns.append(("domain", pattern, target.value))
 
-    def _domain_to_regex(self, domain: str) -> re.Pattern:
+    def _domain_to_regex(self, domain: str) -> re.Pattern[str]:
         """Convert domain to regex pattern that matches subdomains."""
         # Escape dots and create pattern
         escaped = re.escape(domain)
@@ -97,7 +107,15 @@ class ScopeValidator:
 
         # Check against scope
         for pattern_type, pattern, original in self._compiled_patterns:
-            if pattern_type == "ip" and ip == pattern or pattern_type == "cidr" and ip in pattern:
+            if (
+                pattern_type == "ip"
+                and isinstance(pattern, (ipaddress.IPv4Address, ipaddress.IPv6Address))
+                and ip == pattern
+            ) or (
+                pattern_type == "cidr"
+                and isinstance(pattern, (ipaddress.IPv4Network, ipaddress.IPv6Network))
+                and ip in pattern
+            ):
                 return ScopeValidationResult(
                     in_scope=True,
                     target_checked=ip_str,
@@ -128,7 +146,9 @@ class ScopeValidator:
 
         # Check against scope patterns
         for pattern_type, pattern, original in self._compiled_patterns:
-            if pattern_type == "domain" and pattern.match(domain):
+            if pattern_type == "domain" and isinstance(pattern, re.Pattern) and pattern.match(
+                domain
+            ):
                 return ScopeValidationResult(
                     in_scope=True,
                     target_checked=domain,
@@ -224,11 +244,24 @@ class ScopeValidator:
                         cidr_in_scope = False
                         matched = None
                         for pt, pat, orig in self._compiled_patterns:
-                            if pt == "cidr" and network.subnet_of(pat):
-                                cidr_in_scope = True
-                                matched = orig
-                                break
-                            if pt == "ip" and pat in network:
+                            if pt == "cidr" and isinstance(
+                                pat, (ipaddress.IPv4Network, ipaddress.IPv6Network)
+                            ):
+                                if isinstance(network, ipaddress.IPv4Network) and isinstance(
+                                    pat, ipaddress.IPv4Network
+                                ) and network.subnet_of(pat):
+                                    cidr_in_scope = True
+                                    matched = orig
+                                    break
+                                if isinstance(network, ipaddress.IPv6Network) and isinstance(
+                                    pat, ipaddress.IPv6Network
+                                ) and network.subnet_of(pat):
+                                    cidr_in_scope = True
+                                    matched = orig
+                                    break
+                            if pt == "ip" and isinstance(
+                                pat, (ipaddress.IPv4Address, ipaddress.IPv6Address)
+                            ) and pat in network:
                                 cidr_in_scope = True
                                 matched = orig
                                 break

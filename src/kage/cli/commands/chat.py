@@ -8,19 +8,37 @@ import platform
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.panel import Panel
 
-from kage.ai.base import LLMConfig, LLMMessage
+from kage.ai.base import BaseLLMProvider, LLMConfig, LLMMessage
 from kage.ai.providers import create_provider
+from kage.ai.providers.ollama import OllamaProvider
+from kage.ai.providers.openai import LMStudioProvider
 from kage.core.conversation import ConversationManager
+from kage.core.hooks import HookEvent, HookManager
 from kage.core.intent import SECURITY_TOOLS, Intent, classify_intent
-from kage.core.models import Command, CommandStatus, ExecutionEnvironment, Session, Target
+from kage.core.models import Command, CommandStatus, Session, Target
 from kage.core.planner import ExecutionPlan
-from kage.core.router import CommandRouter, ExecutorType, RouteResult
-from kage.mcp import KaliToolsAdvisor, MCPManager
+from kage.core.router import CommandRouter, RouteResult
+from kage.core.tools import (
+    ToolExecutionOrigin,
+    ToolExecutionPlan,
+    ToolRegistry,
+    configure_runtime_context_provider,
+    plans_from_commands,
+    register_builtin_tools,
+    register_mcp_tools,
+)
+from kage.core.tools import (
+    connect as connect_mcp_server,
+)
+from kage.core.tools import (
+    discover_tools as discover_mcp_tools,
+)
+from kage.persistence import SessionStorage
 from kage.security.output_parser import parse_tool_output
 from kage.security.tool_checker import check_tool_installed, get_install_suggestion
 from kage.utils import utcnow
@@ -43,28 +61,37 @@ class ChatSession:
         self.config = config
         self.session = Session()
         self.running = True
-        self.provider = None
+        self.provider: BaseLLMProvider | None = None
         self.conversation: ConversationManager | None = None
         self._pending_commands: list[Command] = []
-        self._session_storage = None
-        self._auto_save = None
+        self._pending_tool_plans: list[ToolExecutionPlan] = []
+        self._session_storage: SessionStorage | None = None
+        self._auto_save: Any | None = None
         self._resumed = False
+        self._turn_counter = 0
 
         # Approval preferences (per-session memory)
         self._approved_all: bool = False
         self._approved_tools: set[str] = set()
         self._auto_approve_file_create: bool = False
         self.workspace_root: Path = Path.cwd().resolve()
+        self._hooks = HookManager()
+        self._tool_registry = ToolRegistry()
+        register_builtin_tools(self._tool_registry)
+        self._hooks.register_context_provider(
+            "tool_registry",
+            self._tool_registry_context,
+        )
+        self._hooks.register_context_provider(
+            "middleware",
+            self._middleware_context,
+        )
+        self._mcp_servers_loaded: list[str] = []
+        configure_runtime_context_provider(self._mcp_execution_context)
+        self._load_mcp_tools()
 
         # Command router
-        self._router = CommandRouter(
-            kali_available=config.kali.enabled and bool(config.kali.servers),
-        )
-
-        # Kali executor (lazy init)
-        self._kali_executor = None
-        self._mcp_manager: MCPManager | None = None
-        self._kali_tools_advisor: KaliToolsAdvisor | None = None
+        self._router = CommandRouter()
 
         # Try to resume existing session
         if session_id:
@@ -80,8 +107,6 @@ class ChatSession:
 
     async def _try_resume_session(self, session_id: str) -> bool:
         """Try to resume an existing session."""
-        from kage.persistence import SessionStorage
-
         self._session_storage = SessionStorage()
 
         # Try exact match first
@@ -161,10 +186,14 @@ class ChatSession:
             await self.provider.close()
 
             # Initialize conversation manager
+            provider = self.provider
+            if provider is None:
+                return False
             self.conversation = ConversationManager(
-                provider=self.provider,
+                provider=provider,
                 config=self.config,
                 session=self.session,
+                llm_tools=self._tool_registry.expose_to_llm(),
             )
 
             return True
@@ -176,50 +205,6 @@ class ChatSession:
     def _is_linux(self) -> bool:
         """Return True when running on Linux."""
         return os.name != "nt" and platform.system().lower() == "linux"
-
-    def _ensure_linux_kali_mcp_servers(self) -> None:
-        """Ensure Linux has built-in Kali MCP server entries."""
-        if not self._is_linux():
-            return
-
-        from kage.persistence.config import MCPServerConfig
-
-        existing = {server.name for server in self.config.mcp.servers}
-
-        if "kali_tools_docs" not in existing:
-            self.config.mcp.servers.append(
-                MCPServerConfig(
-                    name="kali_tools_docs",
-                    transport="stdio",
-                    command="kali-tools-mcp",
-                    auto_start=True,
-                )
-            )
-
-        if "kali_execution" not in existing:
-            self.config.mcp.servers.append(
-                MCPServerConfig(
-                    name="kali_execution",
-                    transport="sse",
-                    url="http://127.0.0.1:5000",
-                    auto_start=True,
-                )
-            )
-
-    async def _init_mcp(self) -> None:
-        """Initialize MCP manager and Kali tools advisor."""
-        if not self.config.mcp.enabled:
-            return
-
-        self._ensure_linux_kali_mcp_servers()
-        self._mcp_manager = MCPManager(self.config.mcp)
-        try:
-            await self._mcp_manager.start()
-            self._kali_tools_advisor = KaliToolsAdvisor(self._mcp_manager)
-        except Exception as e:
-            self.console.print(f"[warning]MCP initialization failed: {e}[/warning]")
-            self._mcp_manager = None
-            self._kali_tools_advisor = None
 
     def _is_within_workspace(self, path: Path) -> bool:
         """Check whether a path is inside the current workspace root."""
@@ -296,6 +281,90 @@ class ChatSession:
                 if len(parsed_store) > 20:
                     del parsed_store[:-20]
 
+    def _tool_registry_context(self) -> dict[str, Any]:
+        """Expose registry capabilities to lifecycle hooks."""
+        return {
+            "available": True,
+            "tool_count": len(self._tool_registry.list()),
+            "tools": [tool.name for tool in self._tool_registry.list()],
+        }
+
+    def _middleware_context(self) -> dict[str, Any]:
+        """Expose middleware availability to hooks."""
+        return {
+            "plugins": {"available": False},
+            "agents": {"available": False},
+            "mcp": {
+                "available": len(self._mcp_servers_loaded) > 0,
+                "servers": list(self._mcp_servers_loaded),
+            },
+        }
+
+    def _load_mcp_tools(self) -> None:
+        """Discover and register MCP tools from configured servers."""
+        server_configs = getattr(self.config, "mcp_servers", [])
+        if not isinstance(server_configs, list) or not server_configs:
+            return
+
+        loaded_servers: list[str] = []
+        for server_config in server_configs:
+            try:
+                connection = connect_mcp_server(server_config)
+                tools = discover_mcp_tools(connection)
+                registered = register_mcp_tools(connection.name, tools, self._tool_registry)
+                if registered:
+                    loaded_servers.append(connection.name)
+            except Exception as exc:
+                self.console.print(f"[warning]MCP server setup failed: {exc}[/warning]")
+        self._mcp_servers_loaded = loaded_servers
+
+    def _mcp_execution_context(self) -> dict[str, Any]:
+        """Provide runtime hook context for MCP tool executions."""
+        return {
+            "hook_dispatch": self._hooks.dispatch,
+            "session": self.session,
+            "turn_id": self._turn_counter,
+        }
+
+    def _display_tool_result(self, plan: ToolExecutionPlan, result: Any) -> None:
+        """Render tool execution outcome for non-shell tools."""
+        output = getattr(result, "output", None)
+        data = getattr(result, "data", None)
+        if output:
+            self.console.print(
+                Panel(
+                    str(output)[:2000],
+                    title=f"[panel.title]Tool Output: {plan.tool_name}[/panel.title]",
+                    border_style="panel.border",
+                )
+            )
+        elif isinstance(data, dict) and "content" in data:
+            self.console.print(
+                Panel(
+                    str(data["content"])[:2000],
+                    title=f"[panel.title]Tool Output: {plan.tool_name}[/panel.title]",
+                    border_style="panel.border",
+                )
+            )
+        else:
+            self.console.print(f"[success]Tool executed: {plan.tool_name}[/success]")
+
+    def _convert_tool_plans_to_pending_commands(self, plans: list[ToolExecutionPlan]) -> list[Command]:
+        """Map shell tool plans to Command objects for approval workflow."""
+        pending_commands: list[Command] = []
+        for plan in plans:
+            if plan.tool_name != "builtin.shell.run":
+                continue
+            command_value = plan.arguments.get("command")
+            if isinstance(command_value, str) and command_value.strip():
+                pending_commands.append(
+                    Command(
+                        command=command_value,
+                        description=plan.description,
+                    )
+                )
+        return pending_commands
+
     def _ensure_tool_installed(self, tool_name: str) -> bool:
         """Ensure a command-line tool is installed before execution."""
         from rich.prompt import Confirm
@@ -335,63 +404,18 @@ class ChatSession:
         self.console.print(f"[success]Tool '{tool_name}' is installed at {post['path']}[/success]")
         return True
 
-    async def _build_security_mcp_context(self, user_input: str) -> str | None:
-        """Use Kali docs MCP to gather tool guidance for security requests."""
-        if not self._is_linux():
-            return None
-        if not self._kali_tools_advisor or not self._kali_tools_advisor.is_available():
-            return None
-
-        workflow = await self._kali_tools_advisor.recommend_tools(user_input)
-        if not workflow.has_recommendations:
-            return None
-
-        lines = [
-            "Kali docs lookup workflow:",
-            f"1) search_kali_tools(query={workflow.query!r})",
-        ]
-
-        context_parts = [
-            "Use the following Kali MCP documentation context when proposing commands.",
-        ]
-
-        for idx, rec in enumerate(workflow.recommendations, start=1):
-            lines.append(f"{idx + 1}) tool: {rec.tool_name} — {rec.rationale}")
-            lines.append(f"   get_tool_usage({rec.tool_name!r}) used for syntax.")
-            if rec.suggested_command:
-                lines.append(f"   suggested command: {rec.suggested_command}")
-            context_parts.append(f"Tool: {rec.tool_name}")
-            if rec.details:
-                context_parts.append(f"Details: {rec.details[:600]}")
-            if rec.usage:
-                context_parts.append(f"Usage: {rec.usage[:800]}")
-
-        self.console.print()
-        self.console.print("[info]Kali Tools MCP workflow[/info]")
-        for line in lines:
-            self.console.print(f"[muted]{line}[/muted]")
-
-        mem = self.session.metadata.setdefault("security_memory", {})
-        mem["last_kali_tools"] = [rec.tool_name for rec in workflow.recommendations]
-
-        return "\n".join(context_parts)
-
     # Available slash commands for autocomplete
     COMMANDS = {
         "help": "Show this help message",
         "exit": "End the session",
         "clear": "Clear the screen",
         "model": "Change LLM model/provider",
-        "mcp": "Manage MCP servers (Docker)",
         "hacker": "Enter autonomous hack mode",
         "hack": "Enter autonomous hack mode",
         "scope": "Show current scope",
         "safe": "Toggle safe mode",
         "findings": "List discovered findings",
-        "history": "Show command history",
         "status": "Show session status",
-        "commands": "Show pending commands",
-        "run": "Execute pending commands",
         "save": "Save session (use: /save or /save <name>)",
         "load": "Load a saved session (use: /load <name>)",
         "saves": "List all saved sessions",
@@ -410,16 +434,20 @@ class ChatSession:
                 options = [c for c in commands if c.startswith(text)]
                 return options[state] if state < len(options) else None
 
-            readline.set_completer(completer)
+            set_completer = getattr(readline, "set_completer", None)
+            parse_and_bind = getattr(readline, "parse_and_bind", None)
+            if callable(set_completer):
+                set_completer(completer)
             # macOS uses libedit which needs different binding
-            if "libedit" in (readline.__doc__ or ""):
-                readline.parse_and_bind("bind ^I rl_complete")
-            else:
-                readline.parse_and_bind("tab: complete")
+            if callable(parse_and_bind):
+                if "libedit" in (readline.__doc__ or ""):
+                    parse_and_bind("bind ^I rl_complete")
+                else:
+                    parse_and_bind("tab: complete")
         except ImportError:
             pass  # readline not available on Windows
 
-    def _suggest_commands(self, partial: str) -> list[str]:
+    def _suggest_commands(self, partial: str) -> list[tuple[str, str]]:
         """Get command suggestions based on partial input."""
         partial = partial.lower()
         matches = []
@@ -464,17 +492,13 @@ class ChatSession:
             "safe",
             "safemode",
             "findings",
-            "history",
             "status",
-            "run",
-            "commands",
             "save",
             "load",
             "saves",
             "export",
             "import",
             "model",
-            "mcp",
             "hacker",
             "hack",
         ]
@@ -485,6 +509,23 @@ class ChatSession:
             return True
 
         if cmd in ("exit", "quit", "q"):
+            stop_result = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.STOP,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "reason": "slash_exit",
+                        "message_count": len(self.session.messages),
+                        "command_count": len(self.session.commands),
+                        "metadata": {"command": command},
+                    },
+                )
+            )
+            if stop_result.errors:
+                self.console.print(
+                    f"[warning]Stop hook error(s): {'; '.join(stop_result.errors)}[/warning]"
+                )
             self.running = False
             self.console.print("[muted]Ending session...[/muted]")
             return False
@@ -507,17 +548,8 @@ class ChatSession:
         elif cmd == "findings":
             self._show_findings()
 
-        elif cmd == "history":
-            self._show_history()
-
         elif cmd == "status":
             self._show_status()
-
-        elif cmd == "run":
-            self._run_pending_commands()
-
-        elif cmd == "commands":
-            self._show_pending_commands()
 
         elif cmd == "save":
             self._save_session(args if args else None)
@@ -544,9 +576,6 @@ class ChatSession:
 
         elif cmd == "model":
             self._change_model()
-
-        elif cmd == "mcp":
-            self._manage_mcp()
 
         elif cmd in ("hacker", "hack"):
             self._enter_hacker_mode()
@@ -623,7 +652,6 @@ class ChatSession:
 [command]/exit[/command]          - End the session
 [command]/clear[/command]         - Clear the screen
 [command]/model[/command]         - Change LLM model/provider
-[command]/mcp[/command]           - Manage MCP servers (Docker)
 [command]/hacker[/command]        - Enter autonomous hack mode
 
 [header]Session Management[/header]
@@ -641,11 +669,10 @@ class ChatSession:
 [command]/safe[/command]          - Toggle safe mode
 [command]/findings[/command]      - List discovered findings
 
-[header]Commands & History[/header]
+[header]Command Execution[/header]
 
-[command]/commands[/command]      - Show pending commands
-[command]/run[/command]           - Execute pending commands
-[command]/history[/command]       - Show command history
+When Kage suggests shell commands, they are previewed and
+you can approve execution immediately.
 
 [header]Natural Language File Tools[/header]
 
@@ -657,7 +684,7 @@ Use plain language for file operations:
 
 [header]Tips[/header]
 
-• Type partial commands to see suggestions (e.g., /h → /help, /history, /hack)
+• Type partial commands to see suggestions (e.g., /h → /help, /hack)
 • Kage uses internal file tools automatically from natural language
 • Use /save <name> to name your sessions for easy recall
 • Use /load <name> to continue where you left off
@@ -711,7 +738,12 @@ Use plain language for file operations:
             "```"
         )
 
-        response = await self.provider.complete(
+        provider = self.provider
+        if provider is None:
+            self.console.print("[error]AI not connected. Restart session.[/error]")
+            return True
+
+        response = await provider.complete(
             messages=[
                 LLMMessage(role="system", content="You are a precise code editor."),
                 LLMMessage(role="user", content=edit_prompt),
@@ -749,8 +781,43 @@ Use plain language for file operations:
             self.console.print("[muted]Edit cancelled.[/muted]")
             return True
 
+        pre_write = await self._hooks.dispatch(
+            HookEvent.PRE_FILE_WRITE,
+            {
+                "session_id": self.session.id,
+                "turn_id": self._turn_counter,
+                "path": str(file_path),
+                "action": "ai_edit",
+                "content": updated_content,
+                "byte_count": len(updated_content.encode("utf-8")),
+                "metadata": {"request": request},
+            },
+        )
+        if pre_write.errors:
+            self.console.print(
+                f"[warning]PreFileWrite hook error(s): {'; '.join(pre_write.errors)}[/warning]"
+            )
+        if not pre_write.continue_pipeline:
+            self.console.print("[muted]Edit blocked by hook.[/muted]")
+            return True
+
+        updated_content = pre_write.payload.get("content", updated_content)
         self._log_action("Editing file", str(file_path.relative_to(self.workspace_root)))
         file_path.write_text(updated_content, encoding="utf-8")
+        post_write = await self._hooks.dispatch(
+            HookEvent.POST_FILE_WRITE,
+            {
+                "session_id": self.session.id,
+                "turn_id": self._turn_counter,
+                "path": str(file_path),
+                "action": "ai_edit",
+                "bytes_written": len(updated_content.encode("utf-8")),
+            },
+        )
+        if post_write.errors:
+            self.console.print(
+                f"[warning]PostFileWrite hook error(s): {'; '.join(post_write.errors)}[/warning]"
+            )
         self.console.print(f"[success]Updated: {file_path}[/success]")
         return True
 
@@ -760,8 +827,10 @@ Use plain language for file operations:
 
         read_prefixes = ("show ", "read ", "open ", "view ")
         if lower.startswith(read_prefixes):
-            path = self._extract_file_path_from_text(user_input) or user_input.split(maxsplit=1)[1]
-            self._read_file(path)
+            read_path = self._extract_file_path_from_text(user_input) or user_input.split(
+                maxsplit=1
+            )[1]
+            self._read_file(read_path)
             return True
 
         if lower.startswith(("list files", "show files", "list directory", "show directory")):
@@ -773,16 +842,16 @@ Use plain language for file operations:
             return True
 
         if lower.startswith(("create ", "make file ", "new file ")):
-            path = self._extract_file_path_from_text(user_input)
-            if path:
-                self._create_file(path)
+            create_path: str | None = self._extract_file_path_from_text(user_input)
+            if create_path:
+                self._create_file(create_path)
                 return True
 
         edit_keywords = ("add ", "update ", "modify ", "change ", "refactor ", "fix ", "remove ")
         if lower.startswith(edit_keywords):
-            path = self._extract_file_path_from_text(user_input)
-            if path:
-                return await self._ai_edit_file(path, user_input)
+            edit_path: str | None = self._extract_file_path_from_text(user_input)
+            if edit_path:
+                return await self._ai_edit_file(edit_path, user_input)
 
         return False
 
@@ -876,30 +945,6 @@ Use plain language for file operations:
         for finding in self.session.findings:
             self.console.print(create_finding_panel(finding))
 
-    def _show_history(self) -> None:
-        """Display command history."""
-        if not self.session.commands:
-            self.console.print("[muted]No commands executed yet.[/muted]")
-            return
-
-        from rich.table import Table
-
-        table = Table(title="Command History", header_style="table.header")
-        table.add_column("ID", style="muted")
-        table.add_column("Command", style="command")
-        table.add_column("Status", style="info")
-        table.add_column("Exit Code", style="muted")
-
-        for cmd in self.session.commands[-20:]:
-            table.add_row(
-                cmd.id[:8],
-                cmd.command[:50] + ("..." if len(cmd.command) > 50 else ""),
-                cmd.status.value,
-                str(cmd.exit_code) if cmd.exit_code is not None else "-",
-            )
-
-        self.console.print(table)
-
     def _show_status(self) -> None:
         """Display session status."""
         from kage.cli.ui.panels import create_status_panel
@@ -914,22 +959,29 @@ Use plain language for file operations:
             )
         )
 
-    def _show_pending_commands(self) -> None:
-        """Show commands pending approval."""
-        if not self._pending_commands:
-            self.console.print("[muted]No pending commands.[/muted]")
+    def _show_suggested_commands(self) -> None:
+        """Show AI-suggested commands queued for approval."""
+        shell_commands = self._pending_commands
+        non_shell_tools = [
+            plan for plan in self._pending_tool_plans if plan.tool_name != "builtin.shell.run"
+        ]
+        if not shell_commands and not non_shell_tools:
+            self.console.print("[muted]No suggested commands.[/muted]")
             return
 
-        self.console.print("[header]Pending Commands[/header]")
-        for i, cmd in enumerate(self._pending_commands, 1):
+        self.console.print("[header]Suggested Commands[/header]")
+        for i, cmd in enumerate(shell_commands, 1):
             self.console.print(f"  [{i}] [command]{cmd.command}[/command]")
             if cmd.description:
                 self.console.print(f"      [muted]{cmd.description}[/muted]")
+        offset = len(shell_commands)
+        for i, plan in enumerate(non_shell_tools, 1):
+            self.console.print(f"  [{offset + i}] [command]{plan.tool_name}[/command]")
+            if plan.arguments:
+                self.console.print(f"      [muted]{plan.arguments}[/muted]")
 
     def _save_session(self, name: str | None = None) -> None:
         """Save the current session with optional name."""
-        from kage.persistence import SessionStorage
-
         if not self._session_storage:
             self._session_storage = SessionStorage()
 
@@ -951,8 +1003,6 @@ Use plain language for file operations:
 
     def _load_session(self, name: str) -> None:
         """Load a session by name or ID."""
-        from kage.persistence import SessionStorage
-
         if not self._session_storage:
             self._session_storage = SessionStorage()
 
@@ -999,8 +1049,6 @@ Use plain language for file operations:
         """List all saved sessions."""
         from rich.table import Table
 
-        from kage.persistence import SessionStorage
-
         if not self._session_storage:
             self._session_storage = SessionStorage()
 
@@ -1036,8 +1084,6 @@ Use plain language for file operations:
     def _export_session(self, args: str) -> None:
         """Export the current session to a file."""
         from pathlib import Path
-
-        from kage.persistence import SessionStorage
 
         if not self._session_storage:
             self._session_storage = SessionStorage()
@@ -1233,7 +1279,44 @@ Use plain language for file operations:
             self._log_action(verb, str(file_path.relative_to(self.workspace_root)))
             file_path.parent.mkdir(parents=True, exist_ok=True)
             content = content.replace("\\n", "\n").replace("\\t", "\t")
+            pre_write = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.PRE_FILE_WRITE,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "path": str(file_path),
+                        "action": action,
+                        "content": content,
+                        "byte_count": len(content.encode("utf-8")),
+                    },
+                )
+            )
+            if pre_write.errors:
+                self.console.print(
+                    f"[warning]PreFileWrite hook error(s): {'; '.join(pre_write.errors)}[/warning]"
+                )
+            if not pre_write.continue_pipeline:
+                self.console.print("[muted]Write blocked by hook.[/muted]")
+                return
+            content = pre_write.payload.get("content", content)
             file_path.write_text(content, encoding="utf-8")
+            post_write = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.POST_FILE_WRITE,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "path": str(file_path),
+                        "action": action,
+                        "bytes_written": len(content.encode("utf-8")),
+                    },
+                )
+            )
+            if post_write.errors:
+                self.console.print(
+                    f"[warning]PostFileWrite hook error(s): {'; '.join(post_write.errors)}[/warning]"
+                )
             self.console.print(f"[success]Written to: {file_path}[/success]")
             self.console.print(f"[muted]{len(content)} bytes written[/muted]")
         except Exception as e:
@@ -1404,7 +1487,44 @@ Use plain language for file operations:
                         "[info]Auto-approving file creation for this session.[/info]"
                     )
 
+            pre_write = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.PRE_FILE_WRITE,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "path": str(file_path),
+                        "action": "create",
+                        "content": content,
+                        "byte_count": len(content.encode("utf-8")),
+                    },
+                )
+            )
+            if pre_write.errors:
+                self.console.print(
+                    f"[warning]PreFileWrite hook error(s): {'; '.join(pre_write.errors)}[/warning]"
+                )
+            if not pre_write.continue_pipeline:
+                self.console.print("[muted]File creation blocked by hook.[/muted]")
+                return
+            content = pre_write.payload.get("content", content)
             file_path.write_text(content, encoding="utf-8")
+            post_write = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.POST_FILE_WRITE,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "path": str(file_path),
+                        "action": "create",
+                        "bytes_written": len(content.encode("utf-8")),
+                    },
+                )
+            )
+            if post_write.errors:
+                self.console.print(
+                    f"[warning]PostFileWrite hook error(s): {'; '.join(post_write.errors)}[/warning]"
+                )
             self.console.print(f"[success]Created: {file_path}[/success]")
             self.console.print(f"[muted]{len(lines)} lines, {len(content)} bytes[/muted]")
         except Exception as e:
@@ -1497,9 +1617,6 @@ Use plain language for file operations:
 
         from rich.prompt import Confirm, Prompt
 
-        from kage.ai.providers.ollama import OllamaProvider
-        from kage.ai.providers.openai import LMStudioProvider
-
         self.console.print()
         self.console.print("[header]Change LLM Model[/header]")
         self.console.print()
@@ -1526,7 +1643,8 @@ Use plain language for file operations:
 
         provider = "ollama"
         base_url = "http://localhost:11434"
-        api_key = None
+        api_key: str | None = None
+        model = self.config.llm.model
 
         if choice == "1":
             provider = "ollama"
@@ -1538,7 +1656,7 @@ Use plain language for file operations:
             self.console.print()
             with self.console.status("[info]Connecting to Ollama...[/info]"):
 
-                async def get_ollama_models():
+                async def get_ollama_models() -> tuple[bool, list[str]]:
                     p = OllamaProvider(base_url=base_url)
                     try:
                         connected = await p.check_connection()
@@ -1582,7 +1700,7 @@ Use plain language for file operations:
             self.console.print()
             with self.console.status("[info]Connecting to LM Studio...[/info]"):
 
-                async def get_lmstudio_models():
+                async def get_lmstudio_models() -> tuple[bool, list[str]]:
                     p = LMStudioProvider(base_url=base_url)
                     try:
                         connected = await p.check_connection()
@@ -1651,202 +1769,6 @@ Use plain language for file operations:
             self.console.print(f"[success]Now using: {provider} / {model}[/success]")
         else:
             self.console.print("[error]Failed to connect. Check settings.[/error]")
-
-    def _manage_mcp(self) -> None:
-        """Manage MCP servers through Docker."""
-        import subprocess
-
-        from rich.prompt import Confirm, Prompt
-        from rich.table import Table
-
-        self.console.print()
-        self.console.print("[header]MCP Server Management[/header]")
-        self.console.print()
-
-        # Check if Docker is available
-        try:
-            result = subprocess.run(
-                ["docker", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                self.console.print("[error]Docker not found or not running[/error]")
-                self.console.print(
-                    "[muted]Install Docker: https://docs.docker.com/get-docker/[/muted]"
-                )
-                return
-            self.console.print("[success]✓ Docker available[/success]")
-        except Exception:
-            self.console.print("[error]Docker not available[/error]")
-            return
-
-        self.console.print()
-        self.console.print("[bold]Options:[/bold]")
-        self.console.print("  [cyan]1[/cyan] - List running MCP containers")
-        self.console.print("  [cyan]2[/cyan] - Start an MCP server")
-        self.console.print("  [cyan]3[/cyan] - Stop an MCP server")
-        self.console.print("  [cyan]4[/cyan] - Pull MCP server image")
-        self.console.print("  [cyan]5[/cyan] - View configured servers")
-        self.console.print()
-
-        choice = Prompt.ask(
-            "[bold]Select option[/bold]", choices=["1", "2", "3", "4", "5"], default="1"
-        )
-
-        if choice == "1":
-            # List running containers
-            self.console.print()
-            result = subprocess.run(
-                [
-                    "docker",
-                    "ps",
-                    "--filter",
-                    "label=mcp-server",
-                    "--format",
-                    "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if result.stdout.strip():
-                self.console.print("[header]Running MCP Containers:[/header]")
-                self.console.print(result.stdout)
-            else:
-                # Show all containers that might be MCP
-                result = subprocess.run(
-                    ["docker", "ps", "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}"],
-                    capture_output=True,
-                    text=True,
-                )
-                self.console.print("[header]Running Docker Containers:[/header]")
-                self.console.print(
-                    result.stdout
-                    if result.stdout.strip()
-                    else "[muted]No containers running[/muted]"
-                )
-
-        elif choice == "2":
-            # Start an MCP server
-            self.console.print()
-            self.console.print("[header]Popular MCP Servers:[/header]")
-            self.console.print("  [cyan]1[/cyan] - mcp/filesystem - File system access")
-            self.console.print("  [cyan]2[/cyan] - mcp/fetch - HTTP fetch capabilities")
-            self.console.print("  [cyan]3[/cyan] - mcp/sqlite - SQLite database")
-            self.console.print("  [cyan]4[/cyan] - mcp/puppeteer - Browser automation")
-            self.console.print("  [cyan]5[/cyan] - Custom image")
-            self.console.print()
-
-            server_choice = Prompt.ask(
-                "[bold]Select server[/bold]", choices=["1", "2", "3", "4", "5"], default="1"
-            )
-
-            images = {
-                "1": "mcp/filesystem",
-                "2": "mcp/fetch",
-                "3": "mcp/sqlite",
-                "4": "mcp/puppeteer",
-            }
-
-            if server_choice == "5":
-                image = Prompt.ask("[bold]Docker image name[/bold]")
-            else:
-                image = images.get(server_choice, "mcp/filesystem")
-
-            container_name = Prompt.ask(
-                "[bold]Container name[/bold]", default=f"kage-{image.split('/')[-1]}"
-            )
-
-            self.console.print()
-            self.console.print(f"[info]Starting {image}...[/info]")
-
-            result = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--name",
-                    container_name,
-                    "--label",
-                    "mcp-server=true",
-                    image,
-                ],
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode == 0:
-                self.console.print(f"[success]✓ Started: {container_name}[/success]")
-
-                # Add to config
-                if Confirm.ask("[bold]Add to Kage config?[/bold]", default=True):
-                    from kage.persistence.config import MCPServerConfig
-
-                    mcp_config = MCPServerConfig(
-                        name=container_name,
-                        transport="docker",
-                        docker_image=image,
-                    )
-                    self.config.mcp.servers.append(mcp_config)
-                    self.config.save()
-                    self.console.print("[success]Added to config[/success]")
-            else:
-                self.console.print(f"[error]Failed to start: {result.stderr}[/error]")
-
-        elif choice == "3":
-            # Stop a container
-            container = Prompt.ask("[bold]Container name to stop[/bold]")
-            if container:
-                result = subprocess.run(
-                    ["docker", "stop", container],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode == 0:
-                    self.console.print(f"[success]✓ Stopped: {container}[/success]")
-                    # Optionally remove
-                    if Confirm.ask("[bold]Remove container?[/bold]", default=False):
-                        subprocess.run(["docker", "rm", container], capture_output=True)
-                        self.console.print("[success]Container removed[/success]")
-                else:
-                    self.console.print(f"[error]Failed: {result.stderr}[/error]")
-
-        elif choice == "4":
-            # Pull an image
-            image = Prompt.ask("[bold]Image to pull[/bold]", default="mcp/filesystem")
-            self.console.print(f"[info]Pulling {image}...[/info]")
-            result = subprocess.run(
-                ["docker", "pull", image],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                self.console.print(f"[success]✓ Pulled: {image}[/success]")
-            else:
-                self.console.print(f"[error]Failed: {result.stderr}[/error]")
-
-        elif choice == "5":
-            # View configured servers
-            self.console.print()
-            if self.config.mcp.servers:
-                table = Table(title="Configured MCP Servers", header_style="table.header")
-                table.add_column("Name", style="highlight")
-                table.add_column("Transport", style="info")
-                table.add_column("Image/Command", style="muted")
-                table.add_column("Enabled", style="info")
-
-                for server in self.config.mcp.servers:
-                    table.add_row(
-                        server.name,
-                        server.transport,
-                        server.docker_image or server.command or "-",
-                        "✓" if server.enabled else "✗",
-                    )
-                self.console.print(table)
-            else:
-                self.console.print("[muted]No MCP servers configured[/muted]")
-                self.console.print("[muted]Use option 2 to start a server[/muted]")
 
     def _enter_hacker_mode(self) -> None:
         """Enter autonomous hack mode."""
@@ -1961,6 +1883,33 @@ Use plain language for file operations:
         for i, cmd in enumerate(commands_to_run):
             step_label = f"[{i + 1}/{len(commands_to_run)}]" if len(commands_to_run) > 1 else ""
             preliminary_route = self._router.route(cmd.command)
+            pre_approval_hook = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.PRE_COMMAND_RUN,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "command": cmd.command,
+                        "description": cmd.description or "",
+                        "route_tool": preliminary_route.tool_name or "",
+                        "route_reasoning": preliminary_route.reasoning,
+                        "phase": "approval",
+                        "step_index": i + 1,
+                        "total_steps": len(commands_to_run),
+                    },
+                )
+            )
+            if pre_approval_hook.errors:
+                self.console.print(
+                    f"[warning]PreCommandRun hook error(s): {'; '.join(pre_approval_hook.errors)}[/warning]"
+                )
+            if not pre_approval_hook.continue_pipeline:
+                cmd.status = CommandStatus.REJECTED
+                self.session.commands.append(cmd)
+                if cmd in self._pending_commands:
+                    self._pending_commands.remove(cmd)
+                self.console.print("[muted]Command blocked by hook.[/muted]")
+                continue
 
             self.console.print()
             if step_label:
@@ -2067,19 +2016,167 @@ Use plain language for file operations:
             route = self._router.route(cmd.command)
             self._log_action("Running command", cmd.command)
 
-            if route.executor_type == ExecutorType.KALI_MCP:
-                cmd.environment = ExecutionEnvironment.KALI_MCP
-                self.console.print(
-                    f"[info]→ Routing to Kali MCP ({route.reasoning})[/info]"
-                )
-
             asyncio.run(self._execute_command(cmd, route))
             if cmd in self._pending_commands:
                 self._pending_commands.remove(cmd)
 
+    def _run_pending_tool_plans(self) -> None:
+        """Execute pending tool plans with deterministic routing."""
+        if not self._pending_tool_plans:
+            self.console.print("[muted]No pending tools.[/muted]")
+            return
+
+        shell_plans = [plan for plan in self._pending_tool_plans if plan.tool_name == "builtin.shell.run"]
+        non_shell_plans = [plan for plan in self._pending_tool_plans if plan.tool_name != "builtin.shell.run"]
+
+        if shell_plans:
+            validated_shell_plans: list[ToolExecutionPlan] = []
+            for shell_plan in shell_plans:
+                validation = self._tool_registry.validate_arguments(
+                    shell_plan.tool_name, shell_plan.arguments
+                )
+                if not validation.valid:
+                    self.console.print(
+                        "[error]Invalid tool arguments for "
+                        f"{shell_plan.tool_name}: {'; '.join(validation.errors)}[/error]"
+                    )
+                    continue
+                validated_shell_plans.append(
+                    shell_plan.model_copy(update={"arguments": validation.arguments})
+                )
+
+            shell_commands = self._convert_tool_plans_to_pending_commands(validated_shell_plans)
+            self._pending_commands = shell_commands
+            self._run_pending_commands()
+
+        total_non_shell = len(non_shell_plans)
+        for index, plan in enumerate(non_shell_plans, start=1):
+            pre_tool_hook = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.PRE_COMMAND_RUN,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "command": plan.tool_name,
+                        "description": plan.description or "",
+                        "route_tool": plan.tool_name,
+                        "route_reasoning": "ToolRegistry dispatch",
+                        "phase": "execute_tool",
+                        "step_index": index,
+                        "total_steps": total_non_shell,
+                        "metadata": {"tool_arguments": plan.arguments},
+                    },
+                )
+            )
+            if pre_tool_hook.errors:
+                self.console.print(
+                    f"[warning]PreCommandRun hook error(s): {'; '.join(pre_tool_hook.errors)}[/warning]"
+                )
+            if not pre_tool_hook.continue_pipeline:
+                self.console.print(f"[muted]Tool blocked by hook: {plan.tool_name}[/muted]")
+                continue
+
+            override_tool_name = pre_tool_hook.payload.get("command")
+            if isinstance(override_tool_name, str) and self._tool_registry.get(override_tool_name):
+                plan = plan.model_copy(update={"tool_name": override_tool_name})
+            metadata = pre_tool_hook.payload.get("metadata")
+            override_args = metadata.get("tool_arguments") if isinstance(metadata, dict) else None
+            if isinstance(override_args, dict):
+                plan = plan.model_copy(update={"arguments": override_args})
+
+            schema = self._tool_registry.get(plan.tool_name)
+            if schema is None:
+                self.console.print(f"[error]Unknown tool plan: {plan.tool_name}[/error]")
+                continue
+
+            validation = self._tool_registry.validate_arguments(plan.tool_name, plan.arguments)
+            if not validation.valid:
+                self.console.print(
+                    f"[error]Invalid tool arguments for {plan.tool_name}: {'; '.join(validation.errors)}[/error]"
+                )
+                continue
+
+            plan = plan.model_copy(
+                update={
+                    "arguments": validation.arguments,
+                    "approval_required": plan.approval_required or schema.permissions.requires_approval,
+                }
+            )
+
+            if plan.approval_required:
+                from rich.prompt import Confirm
+
+                preview = str(plan.arguments)
+                prompt = (
+                    f"[warning]Approve tool execution?[/warning]\n"
+                    f"[command]{plan.tool_name}[/command] {preview}"
+                )
+                if not Confirm.ask(prompt, default=False):
+                    self.console.print(f"[muted]Skipped {plan.tool_name}[/muted]")
+                    continue
+
+            try:
+                started = utcnow()
+                result = asyncio.run(
+                    self._tool_registry.execute(
+                        plan,
+                        context={
+                            "workspace_root": self.workspace_root,
+                            "session_metadata": self.session.metadata,
+                            "session": self.session,
+                        },
+                    )
+                )
+            except Exception as exc:
+                self.console.print(f"[error]Tool execution failed ({plan.tool_name}): {exc}[/error]")
+                asyncio.run(
+                    self._hooks.dispatch(
+                        HookEvent.POST_COMMAND_RUN,
+                        {
+                            "session_id": self.session.id,
+                            "turn_id": self._turn_counter,
+                            "command": plan.tool_name,
+                            "route_tool": plan.tool_name,
+                            "status": "failed",
+                            "exit_code": 1,
+                            "timed_out": False,
+                            "duration_s": 0.0,
+                            "stdout_chars": 0,
+                            "stderr_chars": len(str(exc)),
+                        },
+                    )
+                )
+                continue
+
+            self._display_tool_result(plan, result)
+            completed = utcnow()
+            post_tool_hook = asyncio.run(
+                self._hooks.dispatch(
+                    HookEvent.POST_COMMAND_RUN,
+                    {
+                        "session_id": self.session.id,
+                        "turn_id": self._turn_counter,
+                        "command": plan.tool_name,
+                        "route_tool": plan.tool_name,
+                        "status": "completed",
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "duration_s": (completed - started).total_seconds(),
+                        "stdout_chars": len(getattr(result, "output", "") or ""),
+                        "stderr_chars": 0,
+                    },
+                )
+            )
+            if post_tool_hook.errors:
+                self.console.print(
+                    f"[warning]PostCommandRun hook error(s): {'; '.join(post_tool_hook.errors)}[/warning]"
+                )
+
+        self._pending_tool_plans.clear()
+
+
     async def _execute_command(self, cmd: Command, route: RouteResult | None = None) -> None:
-        """Execute a single command using the appropriate executor."""
-        from kage.core.router import ExecutorType
+        """Execute a single command locally."""
         from kage.executor import LocalExecutor
 
         if route is None:
@@ -2088,39 +2185,34 @@ Use plain language for file operations:
         cmd.status = CommandStatus.RUNNING
         cmd.started_at = utcnow()
 
+        pre_exec_hook = await self._hooks.dispatch(
+            HookEvent.PRE_COMMAND_RUN,
+            {
+                "session_id": self.session.id,
+                "turn_id": self._turn_counter,
+                "command": cmd.command,
+                "description": cmd.description or "",
+                "route_tool": route.tool_name or "",
+                "route_reasoning": route.reasoning,
+                "phase": "execute",
+            },
+        )
+        if pre_exec_hook.errors:
+            self.console.print(
+                f"[warning]PreCommandRun hook error(s): {'; '.join(pre_exec_hook.errors)}[/warning]"
+            )
+        if not pre_exec_hook.continue_pipeline:
+            cmd.status = CommandStatus.REJECTED
+            cmd.completed_at = utcnow()
+            self.console.print("[muted]Execution blocked by hook.[/muted]")
+            self.session.commands.append(cmd)
+            return
+        cmd.command = pre_exec_hook.payload.get("command", cmd.command)
+
         self.console.print("[status.running]Running...[/status.running]")
 
-        executor = None
-
-        # Select executor based on routing
-        if route.executor_type == ExecutorType.KALI_MCP:
-            try:
-                from kage.executor.kali import KaliExecutor
-
-                if self._kali_executor is None:
-                    self._kali_executor = KaliExecutor(
-                        servers=dict(self.config.kali.servers),
-                    )
-                executor = self._kali_executor
-            except Exception as e:
-                if route.fallback_to_local or self.config.kali.fallback_to_local:
-                    self.console.print(
-                        f"[warning]Kali MCP unavailable ({e}). Falling back to local.[/warning]"
-                    )
-                    executor = LocalExecutor()
-                else:
-                    cmd.status = CommandStatus.FAILED
-                    cmd.stderr = f"Kali MCP unavailable: {e}"
-                    cmd.completed_at = utcnow()
-                    self.session.commands.append(cmd)
-                    self.console.print(f"[error]Kali MCP unavailable: {e}[/error]")
-                    return
-
-        if executor is None:
-            executor = LocalExecutor()
-
         try:
-            result = await executor.execute(cmd.command, timeout=cmd.timeout)
+            result = await LocalExecutor().execute(cmd.command, timeout=cmd.timeout)
 
             cmd.exit_code = result.exit_code
             cmd.stdout = result.stdout
@@ -2128,7 +2220,6 @@ Use plain language for file operations:
             cmd.status = CommandStatus.COMPLETED if not result.timed_out else CommandStatus.TIMEOUT
             cmd.completed_at = utcnow()
 
-            # Display output
             if result.stdout:
                 output_text = result.stdout[:2000]
                 if len(result.stdout) > 2000:
@@ -2158,53 +2249,38 @@ Use plain language for file operations:
                 )
 
         except Exception as e:
-            # MCP fallback: if Kali execution failed, try local
-            if (
-                route
-                and route.executor_type == ExecutorType.KALI_MCP
-                and (route.fallback_to_local or self.config.kali.fallback_to_local)
-            ):
-                self.console.print(
-                    f"[warning]Kali MCP failed ({e}). Falling back to local...[/warning]"
-                )
-                try:
-                    fallback = LocalExecutor()
-                    result = await fallback.execute(cmd.command, timeout=cmd.timeout)
-                    cmd.exit_code = result.exit_code
-                    cmd.stdout = result.stdout
-                    cmd.stderr = result.stderr
-                    cmd.status = (
-                        CommandStatus.COMPLETED if not result.timed_out
-                        else CommandStatus.TIMEOUT
-                    )
-                    cmd.completed_at = utcnow()
-                    if result.stdout:
-                        self.console.print(
-                            Panel(
-                                result.stdout[:2000],
-                                title="[panel.title]Output (local fallback)[/panel.title]",
-                                border_style="panel.border",
-                            )
-                        )
-                    self.console.print(
-                        f"[status.completed]Completed via local (exit: {result.exit_code})[/status.completed]"
-                    )
-                except Exception as e2:
-                    cmd.status = CommandStatus.FAILED
-                    cmd.stderr = f"MCP: {e} | Local fallback: {e2}"
-                    cmd.completed_at = utcnow()
-                    self.console.print(f"[error]All executors failed: {e2}[/error]")
-            else:
-                cmd.status = CommandStatus.FAILED
-                cmd.stderr = str(e)
-                cmd.completed_at = utcnow()
-                self.console.print(f"[error]Failed: {e}[/error]")
+            cmd.status = CommandStatus.FAILED
+            cmd.stderr = str(e)
+            cmd.completed_at = utcnow()
+            self.console.print(f"[error]Failed: {e}[/error]")
 
         self.console.print(f"[subtitle]Summary:[/subtitle] {self._summarize_command_result(cmd)}")
 
-        # Add to session history
         if route and route.tool_name and route.tool_name in SECURITY_TOOLS:
             self._remember_security_result(cmd, tool_name=route.tool_name)
+        post_cmd_hook = await self._hooks.dispatch(
+            HookEvent.POST_COMMAND_RUN,
+            {
+                "session_id": self.session.id,
+                "turn_id": self._turn_counter,
+                "command": cmd.command,
+                "route_tool": (route.tool_name or "") if route else "",
+                "status": cmd.status.value,
+                "exit_code": cmd.exit_code if cmd.exit_code is not None else -1,
+                "timed_out": cmd.status == CommandStatus.TIMEOUT,
+                "duration_s": (
+                    (cmd.completed_at - cmd.started_at).total_seconds()
+                    if cmd.started_at and cmd.completed_at
+                    else 0.0
+                ),
+                "stdout_chars": len(cmd.stdout or ""),
+                "stderr_chars": len(cmd.stderr or ""),
+            },
+        )
+        if post_cmd_hook.errors:
+            self.console.print(
+                f"[warning]PostCommandRun hook error(s): {'; '.join(post_cmd_hook.errors)}[/warning]"
+            )
         self.session.commands.append(cmd)
 
     async def _try_reconnect(self) -> bool:
@@ -2215,21 +2291,21 @@ Use plain language for file operations:
                 if self.provider:
                     await self.provider.close()
                 self.provider = create_provider(self.config.llm)
-                connected = await self.provider.check_connection()
+                provider = self.provider
+                connected = await provider.check_connection()
                 if connected:
-                    await self.provider.close()
+                    await provider.close()
                     self.conversation = ConversationManager(
-                        provider=self.provider,
+                        provider=provider,
                         config=self.config,
                         session=self.session,
+                        llm_tools=self._tool_registry.expose_to_llm(),
                     )
                     self.console.print("[success]Reconnected.[/success]")
                     return True
             except Exception:
                 pass
             self.console.print(f"[warning]Retry {attempt + 1}/3...[/warning]")
-            import time
-
             time.sleep(2**attempt)
         return False
 
@@ -2255,7 +2331,6 @@ Use plain language for file operations:
             self.console.print(f"\n[muted]Intent:[/muted] {intent_label}")
 
         # --- Scope auto-prompt for security intent ---
-        security_context: str | None = None
         if (
             intent_result.intent == Intent.SECURITY
             and not self.session.scope.targets
@@ -2263,18 +2338,60 @@ Use plain language for file operations:
         ):
             return
 
-        if intent_result.intent == Intent.SECURITY:
-            security_context = await self._build_security_mcp_context(user_input)
-
         self.console.print()
         self.console.print("[assistant]KAGE:[/assistant] ", end="")
 
         try:
-            response_text, commands = await self.conversation.send_message(
-                user_input,
-                on_chunk=lambda c: self.console.print(c, end="", highlight=False),
-                additional_context=security_context,
+            pre_llm_hook = await self._hooks.dispatch(
+                HookEvent.PRE_LLM_CALL,
+                {
+                    "session_id": self.session.id,
+                    "turn_id": self._turn_counter,
+                    "user_input": user_input,
+                    "intent": intent_result.intent.value,
+                    "safe_mode": self.session.safe_mode,
+                    "scope_targets": [t.value for t in self.session.scope.targets],
+                },
             )
+            if pre_llm_hook.errors:
+                self.console.print(
+                    f"[warning]PreLLMCall hook error(s): {'; '.join(pre_llm_hook.errors)}[/warning]"
+                )
+            if not pre_llm_hook.continue_pipeline:
+                self.console.print("[muted]LLM call blocked by hook.[/muted]")
+                return
+            effective_input = pre_llm_hook.payload.get("user_input", user_input)
+            additional_context = pre_llm_hook.payload.get("additional_context")
+            response_text, commands, plans = await self.conversation.send_message(
+                effective_input,
+                on_chunk=lambda c: self.console.print(c, end="", highlight=False),
+                additional_context=additional_context if isinstance(additional_context, str) else None,
+            )
+            post_llm_hook = await self._hooks.dispatch(
+                HookEvent.POST_LLM_CALL,
+                {
+                    "session_id": self.session.id,
+                    "turn_id": self._turn_counter,
+                    "user_input": effective_input,
+                    "response_text": response_text,
+                    "suggested_commands": [command.command for command in commands],
+                    "suggested_count": len(commands),
+                },
+            )
+            if post_llm_hook.errors:
+                self.console.print(
+                    f"[warning]PostLLMCall hook error(s): {'; '.join(post_llm_hook.errors)}[/warning]"
+                )
+            if not post_llm_hook.continue_pipeline:
+                self.console.print("[muted]Post-LLM pipeline blocked by hook.[/muted]")
+                return
+            response_text = post_llm_hook.payload.get("response_text", response_text)
+            override_commands = post_llm_hook.payload.get("suggested_commands")
+            if isinstance(override_commands, list) and all(
+                isinstance(command, str) for command in override_commands
+            ):
+                commands = [Command(command=command) for command in override_commands]
+                plans = plans_from_commands(commands, origin=ToolExecutionOrigin.LLM)
 
             # If nothing was streamed (error/empty), print the response text directly
             if response_text and response_text.startswith(("Error ", "No response")):
@@ -2282,19 +2399,41 @@ Use plain language for file operations:
 
             self.console.print()  # Newline after streaming
 
-            # --- Tag commands with routing info ---
-            if commands:
-                for cmd in commands:
-                    route = self._router.route(cmd.command)
-                    if route.executor_type == ExecutorType.KALI_MCP:
-                        cmd.environment = ExecutionEnvironment.KALI_MCP
-
-                self._pending_commands.extend(commands)
+            if plans:
+                self._pending_tool_plans.extend(plans)
+                shell_commands = self._convert_tool_plans_to_pending_commands(plans)
+                self._pending_commands.extend(shell_commands)
                 self.console.print()
+                self.console.print(f"[info]{len(plans)} action(s) suggested.[/info]")
+                self._show_suggested_commands()
+
+                from rich.prompt import Confirm
+
+                if Confirm.ask("[info]Execute suggested action(s) now?[/info]", default=True):
+                    self._run_pending_tool_plans()
+                else:
+                    self._pending_commands.clear()
+                    self._pending_tool_plans.clear()
+                    self.console.print("[muted]Skipped suggested command(s).[/muted]")
+
+            post_turn = await self._hooks.dispatch(
+                HookEvent.POST_TURN_PERSIST,
+                {
+                    "session_id": self.session.id,
+                    "turn_id": self._turn_counter,
+                    "user_input": effective_input,
+                    "llm_called": True,
+                    "suggested_count": len(plans),
+                    "message_count": len(self.session.messages),
+                    "command_count": len(self.session.commands),
+                },
+            )
+            if post_turn.errors:
                 self.console.print(
-                    f"[info]{len(commands)} command(s) suggested. "
-                    f"Use /commands to view, /run to execute.[/info]"
+                    f"[warning]PostTurnPersist hook error(s): {'; '.join(post_turn.errors)}[/warning]"
                 )
+            if post_turn.payload.get("force_save") is True:
+                self._save_session()
 
         except Exception as e:
             self.console.print()
@@ -2309,7 +2448,25 @@ Use plain language for file operations:
         # Initialize provider
         if not asyncio.run(self._init_provider()):
             return
-        asyncio.run(self._init_mcp())
+        start_hook = asyncio.run(
+            self._hooks.dispatch(
+                HookEvent.SESSION_START,
+                {
+                    "session_id": self.session.id,
+                    "provider": self.config.llm.provider,
+                    "model": self.config.llm.model,
+                    "safe_mode": self.session.safe_mode,
+                    "scope_targets": [target.value for target in self.session.scope.targets],
+                },
+            )
+        )
+        if start_hook.errors:
+            self.console.print(
+                f"[warning]SessionStart hook error(s): {'; '.join(start_hook.errors)}[/warning]"
+            )
+        if not start_hook.continue_pipeline:
+            self.console.print("[warning]Session start blocked by hook.[/warning]")
+            return
 
         # Set up tab completion for slash commands
         self._setup_completer()
@@ -2338,6 +2495,29 @@ Use plain language for file operations:
 
                 if not user_input.strip():
                     continue
+                self._turn_counter += 1
+                prompt_hook = asyncio.run(
+                    self._hooks.dispatch(
+                        HookEvent.USER_PROMPT_SUBMIT,
+                        {
+                            "session_id": self.session.id,
+                            "turn_id": self._turn_counter,
+                            "user_input": user_input,
+                        },
+                    )
+                )
+                if prompt_hook.errors:
+                    self.console.print(
+                        f"[warning]UserPromptSubmit hook error(s): {'; '.join(prompt_hook.errors)}[/warning]"
+                    )
+                if not prompt_hook.continue_pipeline:
+                    self.console.print("[muted]Input blocked by hook.[/muted]")
+                    continue
+                user_input = prompt_hook.payload.get("user_input", user_input)
+                if not isinstance(user_input, str):
+                    user_input = ""
+                if not user_input.strip():
+                    continue
 
                 # Handle slash commands
                 if user_input.startswith("/"):
@@ -2360,10 +2540,24 @@ Use plain language for file operations:
                 break
 
         # Cleanup
+        stop_hook = asyncio.run(
+            self._hooks.dispatch(
+                HookEvent.STOP,
+                {
+                    "session_id": self.session.id,
+                    "turn_id": self._turn_counter,
+                    "reason": "session_cleanup",
+                    "message_count": len(self.session.messages),
+                    "command_count": len(self.session.commands),
+                },
+            )
+        )
+        if stop_hook.errors:
+            self.console.print(
+                f"[warning]Stop hook error(s): {'; '.join(stop_hook.errors)}[/warning]"
+            )
         if self.provider:
             asyncio.run(self.provider.close())
-        if self._mcp_manager:
-            asyncio.run(self._mcp_manager.stop())
 
         self.console.print()
         self.console.print("[info]Session ended.[/info]")

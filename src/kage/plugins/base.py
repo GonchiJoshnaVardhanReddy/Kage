@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kage.core.models import Session
+    from kage.plugins.schema import PluginSchema
 
 
 @dataclass
@@ -83,7 +84,7 @@ def capability(
     dangerous: bool = False,
     requires_approval: bool = True,
     category: str = "general",
-) -> Callable:
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to mark a method as a plugin capability.
 
     Usage:
@@ -96,9 +97,9 @@ def capability(
             return f"nmap -sV {target}"
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Store capability metadata on the function
-        func._capability_meta = {  # type: ignore[attr-defined]
+        meta: dict[str, Any] = {
             "name": name,
             "description": description,
             "parameters": parameters or [],
@@ -106,12 +107,13 @@ def capability(
             "requires_approval": requires_approval,
             "category": category,
         }
+        func._capability_meta = meta  # type: ignore[attr-defined]
 
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             return func(*args, **kwargs)
 
-        wrapper._capability_meta = func._capability_meta  # type: ignore[attr-defined]
+        wrapper._capability_meta = meta  # type: ignore[attr-defined]
         return wrapper
 
     return decorator
@@ -150,6 +152,7 @@ class BasePlugin(ABC):
     def __init__(self) -> None:
         self._capabilities: dict[str, Capability] = {}
         self._context: PluginContext | None = None
+        self._manifest_schema: PluginSchema | None = None
 
     @property
     @abstractmethod
@@ -282,7 +285,7 @@ class BasePlugin(ABC):
 
     def cleanup(self) -> None:
         """Clean up plugin resources."""
-        pass
+        return None
 
     def check_requirements(self) -> tuple[bool, list[str]]:
         """Check if required tools are available.

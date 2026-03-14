@@ -33,7 +33,7 @@ class IntentResult(BaseModel):
     reasoning: str = ""
 
 
-# Security tools that should route to Kali MCP
+# Security tools used for security intent detection
 SECURITY_TOOLS: set[str] = {
     "nmap", "sqlmap", "nikto", "hydra", "gobuster", "dirb", "dirbuster",
     "wpscan", "msfconsole", "metasploit", "msfvenom", "enum4linux",

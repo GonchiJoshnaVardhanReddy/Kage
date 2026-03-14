@@ -9,10 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import aiofiles
-
 from kage.core.models import Session
 from kage.persistence.config import get_data_dir
+from kage.third_party import aiofiles
 from kage.utils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -137,7 +136,7 @@ class SessionStorage:
         index_path = self._get_index_path()
 
         # Load existing index
-        index = {"sessions": {}}
+        index: dict[str, dict[str, dict[str, Any]]] = {"sessions": {}}
         if index_path.exists():
             try:
                 async with aiofiles.open(index_path) as f:

@@ -3,7 +3,7 @@
 from kage.plugins.base import BasePlugin, Capability, CapabilityParameter, PluginContext, capability
 from kage.plugins.manager import PluginLoadError, PluginManager
 from kage.plugins.sandbox import PluginSandbox, SandboxViolation, validate_plugin_code
-from kage.plugins.schema import PluginSchema
+from kage.plugins.schema import PluginSchema, PluginToolSchema
 
 __all__ = [
     "BasePlugin",
@@ -17,4 +17,5 @@ __all__ = [
     "capability",
     "validate_plugin_code",
     "PluginSchema",
+    "PluginToolSchema",
 ]

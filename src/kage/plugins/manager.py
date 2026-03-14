@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kage.core.tools import ToolRegistry
 from kage.plugins.base import BasePlugin, Capability, PluginContext
 from kage.plugins.sandbox import PluginSandbox, SandboxViolation, validate_plugin_code
 from kage.plugins.schema import PluginSchema
 
 if TYPE_CHECKING:
     from kage.core.models import Session
+    from kage.core.tools import ToolSchema
 
 
 class PluginLoadError(Exception):
@@ -27,13 +30,16 @@ class PluginManager:
         self,
         plugin_dirs: list[Path] | None = None,
         sandbox_enabled: bool = True,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs or []
         self.sandbox_enabled = sandbox_enabled
+        self.tool_registry = tool_registry
         self._plugins: dict[str, BasePlugin] = {}
         self._capabilities: dict[
             str, tuple[str, Capability]
         ] = {}  # cap_name -> (plugin_name, capability)
+        self._registered_tools: dict[str, list[str]] = {}
         self._sandbox = PluginSandbox() if sandbox_enabled else None
 
     def add_plugin_dir(self, path: Path) -> None:
@@ -119,14 +125,17 @@ class PluginManager:
             raise PluginLoadError(f"Error loading plugin module: {e}") from e
 
         # Get plugin class
-        plugin_class = getattr(module, schema.plugin_class, None)
-        if plugin_class is None:
+        plugin_class_obj = getattr(module, schema.plugin_class, None)
+        if plugin_class_obj is None:
             raise PluginLoadError(
                 f"Plugin class '{schema.plugin_class}' not found in {plugin_file}"
             )
 
-        if not issubclass(plugin_class, BasePlugin):
+        if not isinstance(plugin_class_obj, type) or not issubclass(
+            plugin_class_obj, BasePlugin
+        ):
             raise PluginLoadError("Plugin class must inherit from BasePlugin")
+        plugin_class: type[BasePlugin] = plugin_class_obj
 
         # Instantiate plugin
         plugin = plugin_class()
@@ -147,6 +156,20 @@ class PluginManager:
         # Register capabilities
         for capability in plugin.get_capabilities():
             self._capabilities[capability.name] = (plugin.name, capability)
+
+        try:
+            if self.tool_registry:
+                tool_schemas = self._register_tools_for_plugin(plugin, schema)
+                self._registered_tools[plugin.name] = [tool.name for tool in tool_schemas]
+            else:
+                self._registered_tools[plugin.name] = []
+        except Exception as e:
+            for cap_name, (plugin_name, _) in list(self._capabilities.items()):
+                if plugin_name == plugin.name:
+                    del self._capabilities[cap_name]
+            self._plugins.pop(plugin.name, None)
+            self._registered_tools.pop(plugin.name, None)
+            raise PluginLoadError(f"Plugin tool registration failed: {e}") from e
 
         return plugin
 
@@ -202,7 +225,9 @@ class PluginManager:
         """Get OpenAI-compatible tool schemas for all capabilities."""
         return [cap.to_tool_schema() for cap in self.get_all_capabilities()]
 
-    def set_context(self, session: Session, log_fn: callable | None = None) -> None:
+    def set_context(
+        self, session: Session, log_fn: Callable[[str], None] | None = None
+    ) -> None:
         """Set context for all plugins."""
         context = PluginContext(session, log_fn)
         for plugin in self._plugins.values():
@@ -235,6 +260,11 @@ class PluginManager:
             if plugin_name == name:
                 del self._capabilities[cap_name]
 
+        if self.tool_registry:
+            for tool_name in self._registered_tools.get(name, []):
+                self.tool_registry.unregister(tool_name)
+        self._registered_tools.pop(name, None)
+
         # Remove plugin
         del self._plugins[name]
         return True
@@ -243,3 +273,14 @@ class PluginManager:
         """Unload all plugins."""
         for name in list(self._plugins.keys()):
             self.unload_plugin(name)
+
+    def _register_tools_for_plugin(self, plugin: BasePlugin, schema: PluginSchema) -> list[ToolSchema]:
+        """Lazily import plugin tool loader to avoid import cycles."""
+        from kage.core.plugins.tool_loader import register_plugin_tools
+
+        if plugin.name != schema.name:
+            raise PluginLoadError(f"Plugin/schema name mismatch: {plugin.name} != {schema.name}")
+        if self.tool_registry is None:
+            return []
+        plugin._manifest_schema = schema
+        return register_plugin_tools(plugin, self.tool_registry, schema=schema)

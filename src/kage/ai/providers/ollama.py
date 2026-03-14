@@ -9,8 +9,6 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from kage.ai.base import (
     BaseLLMProvider,
     LLMConfig,
@@ -18,6 +16,8 @@ from kage.ai.base import (
     LLMResponse,
     StreamChunk,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(BaseLLMProvider):
@@ -137,39 +137,42 @@ class OllamaProvider(BaseLLMProvider):
             raw=data,
         )
 
-    async def stream(
+    def stream(
         self,
         messages: list[LLMMessage],
         config: LLMConfig,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion response from Ollama."""
-        client = await self._get_client()
-        body = self._build_request_body(messages, config, stream=True)
+        async def _stream() -> AsyncIterator[StreamChunk]:
+            client = await self._get_client()
+            body = self._build_request_body(messages, config, stream=True)
 
-        async with client.stream("POST", "/api/chat", json=body) as response:
-            response.raise_for_status()
+            async with client.stream("POST", "/api/chat", json=body) as response:
+                response.raise_for_status()
 
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
 
-                try:
-                    data = json.loads(line)
-                    message = data.get("message", {})
-                    content = message.get("content", "")
+                    try:
+                        data = json.loads(line)
+                        message = data.get("message", {})
+                        content = message.get("content", "")
 
-                    finish_reason = None
-                    if data.get("done"):
-                        finish_reason = data.get("done_reason", "stop")
+                        finish_reason = None
+                        if data.get("done"):
+                            finish_reason = data.get("done_reason", "stop")
 
-                    yield StreamChunk(
-                        content=content,
-                        finish_reason=finish_reason,
-                        tool_calls=message.get("tool_calls"),
-                    )
+                        yield StreamChunk(
+                            content=content,
+                            finish_reason=finish_reason,
+                            tool_calls=message.get("tool_calls"),
+                        )
 
-                    if data.get("done"):
-                        break
+                        if data.get("done"):
+                            break
 
-                except json.JSONDecodeError:
-                    continue
+                    except json.JSONDecodeError:
+                        continue
+
+        return _stream()

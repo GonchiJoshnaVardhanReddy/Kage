@@ -6,19 +6,22 @@ import asyncio
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Confirm
 from rich.table import Table
 
+from kage.ai.base import BaseLLMProvider
+from kage.core.intent import SECURITY_TOOLS
 from kage.core.models import Command, CommandStatus, Finding, Session, Severity, Target
-from kage.mcp import MCPManager
+from kage.executor import LocalExecutor
 from kage.persistence.config import KageConfig
+from kage.reporting.export import OutputFormat
+from kage.security.output_parser import parse_tool_output
+from kage.security.safemode import DangerLevel, SafeModeFilter
 from kage.utils import utcnow
-
-if TYPE_CHECKING:
-    from kage.ai.base import BaseLLMProvider
 
 
 class HackPhase(str, Enum):
@@ -91,14 +94,24 @@ class HackModeEngine:
         self.config = config
         self.target = target
         self.scope = scope or [target]
-        self.session = Session(safe_mode=False)  # No safety in hack mode
+        self.session = Session(safe_mode=True)
         self.phase = HackPhase.INIT
         self.provider: BaseLLMProvider | None = None
-        self.mcp_manager: MCPManager | None = None
         self._findings: list[Finding] = []
         self._commands_run: list[Command] = []
         self._attack_plan: dict[str, Any] = {}
         self._start_time: datetime | None = None
+        self._safe_mode_filter = SafeModeFilter(enabled=True)
+        self._approved_all_commands = False
+        self._max_iterations = 20
+        self._iteration_count = 0
+        memory = self.session.metadata.setdefault("security_memory", {})
+        memory.setdefault("target", target)
+        memory.setdefault("open_ports", [])
+        memory.setdefault("services", [])
+        memory.setdefault("vulnerabilities", [])
+        memory.setdefault("credentials", [])
+        memory.setdefault("notes", [])
 
     async def _init_llm(self) -> bool:
         """Initialize LLM provider."""
@@ -115,18 +128,115 @@ class HackModeEngine:
             self.console.print(f"[error]LLM initialization failed: {e}[/error]")
             return False
 
-    async def _init_mcp(self) -> None:
-        """Initialize MCP manager and connect to servers."""
-        self.mcp_manager = MCPManager(self.config.mcp)
-        try:
-            await self.mcp_manager.start()
-            tools = self.mcp_manager.get_all_tools()
-            if tools:
-                self.console.print(
-                    f"[info]MCP: {len(tools)} tools available from {len(self.mcp_manager.get_connected_servers())} servers[/info]"
+    def _memory_tool(self, action: str, key: str, value: Any | None = None) -> Any:
+        """Store or retrieve autonomous workflow memory."""
+        memory = self.session.metadata.setdefault("security_memory", {})
+
+        if action == "get":
+            return memory.get(key)
+
+        if action == "append":
+            values = memory.setdefault(key, [])
+            if not isinstance(values, list):
+                values = []
+                memory[key] = values
+            values.append(value)
+            return values
+
+        if action == "set":
+            memory[key] = value
+            return value
+
+        raise ValueError(f"Unsupported memory action: {action}")
+
+    # Public tool-style wrappers (explicit names for autonomous workflow).
+    def memory_tool(self, action: str, key: str, value: Any | None = None) -> Any:
+        return self._memory_tool(action, key, value)
+
+    def _planner_tool(self, target: str, task: str) -> list[str]:
+        """Build a deterministic pentest plan for the target/task."""
+        normalized_task = task.lower()
+
+        if "scan" in normalized_task or "recon" in normalized_task:
+            plan = [
+                f"nmap -sV -sC {target}",
+                f"gobuster dir -u http://{target} -w /usr/share/wordlists/dirb/common.txt",
+                f"nikto -h http://{target}",
+                f"sqlmap -u http://{target} --batch --crawl=1",
+            ]
+        else:
+            plan = [
+                f"nmap -sV -sC {target}",
+                f"nmap -sV --script=vuln {target}",
+            ]
+
+        self._memory_tool("set", "target", target)
+        self._memory_tool("set", "plan", plan)
+        self._attack_plan["autonomous_plan"] = plan
+        return plan
+
+    def planner_tool(self, target: str, task: str) -> list[str]:
+        return self._planner_tool(target, task)
+
+    async def _execute_local(self, command: str) -> tuple[int, str, str, str]:
+        """Execute command locally."""
+        local = LocalExecutor()
+        local_result = await local.execute(command, timeout=300)
+        return local_result.exit_code, local_result.stdout, local_result.stderr, "local"
+
+    async def _shell_tool(self, command: str) -> Command:
+        """Execute a shell command with approval + safety warning."""
+        if self._iteration_count >= self._max_iterations:
+            self.console.print("[warning]Reached maximum autonomous iterations (20).[/warning]")
+            cmd = Command(
+                command=command,
+                description="Skipped due to iteration limit",
+                status=CommandStatus.REJECTED,
+                completed_at=utcnow(),
+            )
+            self._commands_run.append(cmd)
+            self.session.commands.append(cmd)
+            return cmd
+
+        risk = self._safe_mode_filter.check(command)
+        if risk.danger_level in (DangerLevel.BLOCKED, DangerLevel.DANGEROUS):
+            self.console.print(
+                f"[warning]Dangerous command detected: {risk.reason or 'High risk'}[/warning]"
+            )
+
+        if not self._approved_all_commands:
+            approve = Confirm.ask(
+                f"[warning]Approve command?[/warning] [command]{command}[/command]",
+                default=False,
+            )
+            if not approve:
+                cmd = Command(
+                    command=command,
+                    description="Command rejected by user",
+                    status=CommandStatus.REJECTED,
+                    completed_at=utcnow(),
                 )
-        except Exception as e:
-            self.console.print(f"[warning]MCP initialization: {e}[/warning]")
+                self._commands_run.append(cmd)
+                self.session.commands.append(cmd)
+                return cmd
+            if Confirm.ask(
+                "[info]Approve all subsequent commands for this run?[/info]",
+                default=False,
+            ):
+                self._approved_all_commands = True
+
+        self._iteration_count += 1
+        return await self._execute_command(command, "Autonomous tool execution")
+
+    async def shell_tool(self, command: str) -> Command:
+        return await self._shell_tool(command)
+
+    def _report_tool(self, title: str) -> None:
+        """Record report metadata in session memory."""
+        self._memory_tool("set", "report_title", title)
+
+    def report_tool(self, title: str) -> None:
+        self._report_tool(title)
 
     def _set_phase(self, phase: HackPhase) -> None:
         """Update current phase."""
@@ -142,8 +252,6 @@ class HackModeEngine:
 
     async def _execute_command(self, command: str, description: str | None = None) -> Command:
         """Execute a command and return result."""
-        from kage.executor import LocalExecutor
-
         cmd = Command(
             command=command,
             description=description,
@@ -153,19 +261,17 @@ class HackModeEngine:
 
         self.console.print(f"  [dim]$[/dim] [command]{command}[/command]")
 
-        executor = LocalExecutor()
-
         try:
-            result = await executor.execute(command, timeout=300)
-            cmd.exit_code = result.exit_code
-            cmd.stdout = result.stdout
-            cmd.stderr = result.stderr
+            exit_code, stdout, stderr, environment = await self._execute_local(command)
+            cmd.exit_code = exit_code
+            cmd.stdout = stdout
+            cmd.stderr = stderr
             cmd.status = CommandStatus.COMPLETED
             cmd.completed_at = utcnow()
 
             # Show truncated output
-            if result.stdout:
-                lines = result.stdout.strip().split("\n")
+            if stdout:
+                lines = stdout.strip().split("\n")
                 if len(lines) > 5:
                     self.console.print(f"    [dim]{lines[0]}[/dim]")
                     self.console.print(f"    [dim]... ({len(lines) - 2} more lines)[/dim]")
@@ -173,6 +279,40 @@ class HackModeEngine:
                 else:
                     for line in lines[:5]:
                         self.console.print(f"    [dim]{line}[/dim]")
+
+            tool = command.split()[0].lower() if command.split() else ""
+            if tool in SECURITY_TOOLS:
+                parsed = parse_tool_output(tool, stdout or stderr)
+                if parsed.get("supported"):
+                    parsed_data = parsed.get("parsed", {})
+                    self._memory_tool("append", "parsed_outputs", parsed)
+                    if tool == "nmap":
+                        self._memory_tool("set", "open_ports", parsed_data.get("open_ports", []))
+                        self._memory_tool("set", "services", parsed_data.get("services", []))
+                    elif tool == "sqlmap" and parsed_data.get("vulnerable"):
+                        vulns = self._memory_tool("get", "vulnerabilities") or []
+                        if not isinstance(vulns, list):
+                            vulns = []
+                        vulns.append(
+                            {
+                                "tool": "sqlmap",
+                                "dbms": parsed_data.get("dbms"),
+                                "parameters": parsed_data.get("parameters", []),
+                            }
+                        )
+                        self._memory_tool("set", "vulnerabilities", vulns)
+
+            self._memory_tool(
+                "append",
+                "recon_results",
+                {
+                    "command": command,
+                    "environment": environment,
+                    "exit_code": exit_code,
+                    "stdout_preview": (stdout or "")[:500],
+                    "stderr_preview": (stderr or "")[:300],
+                },
+            )
 
         except Exception as e:
             cmd.status = CommandStatus.FAILED
@@ -218,7 +358,6 @@ Your capabilities:
 - Execute any shell command
 - Use any security tools (nmap, gobuster, nikto, sqlmap, hydra, etc.)
 - Exploit vulnerabilities you discover
-- Access MCP tools for extended functionality
 
 Guidelines:
 1. Be thorough but efficient
@@ -276,23 +415,41 @@ Respond in JSON format:
                 "attack_vectors": ["service_exploit", "web_vuln"],
             }
 
+        plan = self._planner_tool(self.target, f"scan {self.target}")
+        self._attack_plan["autonomous_plan"] = plan
+
     async def _phase_recon(self) -> None:
         """Reconnaissance phase."""
         self._set_phase(HackPhase.RECON)
 
-        recon_commands = self._attack_plan.get(
-            "recon_commands",
-            [
-                f"ping -c 3 {self.target}",
-                f"nmap -sn {self.target}",
-                f"nmap -sV -sC -p 1-1000 {self.target}",
-                f"whois {self.target}" if "." in self.target else None,
-            ],
-        )
+        plan_commands = self._attack_plan.get("autonomous_plan", [])
+        recon_commands = [
+            cmd
+            for cmd in plan_commands
+            if isinstance(cmd, str) and cmd.split()[0].lower() in {"nmap", "gobuster", "nikto", "sqlmap"}
+        ]
+        if not recon_commands:
+            recon_commands = self._attack_plan.get(
+                "recon_commands",
+                [
+                    f"ping -c 3 {self.target}",
+                    f"nmap -sn {self.target}",
+                    f"nmap -sV -sC -p 1-1000 {self.target}",
+                    f"whois {self.target}" if "." in self.target else None,
+                ],
+            )
 
-        for cmd in recon_commands:
+        self.console.print("[warning]Confirm scope before active scans.[/warning]")
+        self.console.print(f"[info]Scope: {', '.join(self.scope)}[/info]")
+        if not Confirm.ask("[warning]Proceed with active reconnaissance?[/warning]", default=False):
+            self.console.print("[muted]Recon phase cancelled by user.[/muted]")
+            return
+
+        for idx, cmd in enumerate(recon_commands):
+            if idx >= self._max_iterations:
+                break
             if cmd:
-                await self._execute_command(cmd, "Reconnaissance")
+                await self._shell_tool(cmd)
                 await asyncio.sleep(1)  # Small delay between commands
 
     async def _phase_enumeration(self) -> None:
@@ -308,7 +465,7 @@ Respond in JSON format:
 
         for cmd in enum_commands:
             if cmd:
-                await self._execute_command(cmd, "Enumeration")
+                await self._shell_tool(cmd)
                 await asyncio.sleep(1)
 
         # Ask LLM to analyze results and suggest more enumeration
@@ -336,7 +493,7 @@ Respond with just the commands, one per line."""
                     # Basic sanitization
                     if any(c in line for c in ["|", ";", "&&", "`", "$("]):
                         continue  # Skip potentially dangerous command chaining
-                    await self._execute_command(line, "AI-suggested enumeration")
+                    await self._shell_tool(line)
 
     async def _phase_exploitation(self) -> None:
         """Exploitation phase."""
@@ -377,10 +534,19 @@ Focus on verified vulnerabilities only. Be specific."""
             )
             self._findings.append(finding)
             self.session.findings.append(finding)
+            vulnerabilities = self._memory_tool("get", "vulnerabilities") or []
+            if not isinstance(vulnerabilities, list):
+                vulnerabilities = []
+            vulnerabilities.append(
+                {"title": finding.title, "severity": finding.severity.value, "description": finding.description}
+            )
+            self._memory_tool("set", "vulnerabilities", vulnerabilities)
+        self._memory_tool("append", "notes", response[:500])
 
     async def _phase_reporting(self) -> None:
         """Generate final report."""
         self._set_phase(HackPhase.REPORTING)
+        self._report_tool(f"Kage Pentest Report - {self.target}")
 
         from kage.reporting import ReportExporter
 
@@ -404,7 +570,7 @@ Focus on verified vulnerabilities only. Be specific."""
         )
 
         # Generate report
-        report_format = self.config.hack_mode.report_format
+        report_format = cast(OutputFormat, self.config.hack_mode.report_format)
         filename = f"hackmode_report_{self.target.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         if report_format == "html":
@@ -461,8 +627,6 @@ Generated by Kage Hack Mode
             if not await self._init_llm():
                 return self.session
 
-            await self._init_mcp()
-
             # Run phases
             await self._phase_planning()
             await self._phase_recon()
@@ -480,8 +644,6 @@ Generated by Kage Hack Mode
 
         finally:
             # Cleanup
-            if self.mcp_manager:
-                await self.mcp_manager.stop()
             if self.provider:
                 await self.provider.close()
 
@@ -505,7 +667,7 @@ Generated by Kage Hack Mode
         table.add_row("Findings", str(len(self._findings)))
 
         # Count findings by severity
-        severity_counts = {}
+        severity_counts: dict[str, int] = {}
         for f in self._findings:
             severity_counts[f.severity.value] = severity_counts.get(f.severity.value, 0) + 1
 

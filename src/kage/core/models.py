@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from kage.core.observability.session_trace import SessionTrace
 from kage.utils import utcnow
 
 
@@ -31,7 +32,6 @@ class ExecutionEnvironment(str, Enum):
     SSH = "ssh"
     DOCKER = "docker"
     WSL = "wsl"
-    KALI_MCP = "kali_mcp"
 
 
 class CommandStatus(str, Enum):
@@ -137,6 +137,13 @@ class Session(BaseModel):
     safe_mode: bool = True
     environment: ExecutionEnvironment = ExecutionEnvironment.LOCAL
     metadata: dict[str, Any] = Field(default_factory=dict)
+    trace: SessionTrace = Field(default_factory=SessionTrace)
+
+    def model_post_init(self, __context: Any) -> None:
+        """Register the session trace for cross-component observability lookups."""
+        from kage.core.observability import register_session_trace
+
+        register_session_trace(self.id, self.trace)
 
 
 class AuditEntry(BaseModel):

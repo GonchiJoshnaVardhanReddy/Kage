@@ -7,6 +7,7 @@ import base64
 import os
 import subprocess
 from collections.abc import AsyncIterator
+from functools import partial
 
 from kage.executor.base import BaseExecutor, ExecutionResult, StreamingOutput
 from kage.utils import utcnow
@@ -85,18 +86,20 @@ class LocalExecutor(BaseExecutor):
                 cmd = [self.shell, "-c", command]
                 use_shell = False
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            run_cmd = partial(
+                subprocess.run,
+                cmd,
+                shell=use_shell,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                env=run_env,
+            )
             result = await loop.run_in_executor(
                 None,
-                lambda: subprocess.run(
-                    cmd,
-                    shell=use_shell,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=cwd,
-                    env=run_env,
-                ),
+                run_cmd,
             )
             exit_code = result.returncode
             stdout = result.stdout
@@ -122,7 +125,7 @@ class LocalExecutor(BaseExecutor):
             working_dir=cwd,
         )
 
-    async def execute_streaming(
+    def execute_streaming(
         self,
         command: str,
         timeout: int = 300,
@@ -130,74 +133,72 @@ class LocalExecutor(BaseExecutor):
         env: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamingOutput]:
         """Execute a command and stream output."""
-        cwd = working_dir or self.working_dir
+        async def _stream() -> AsyncIterator[StreamingOutput]:
+            cwd = working_dir or self.working_dir
 
-        # Merge environment variables
-        run_env = os.environ.copy()
-        if env:
-            run_env.update(sanitize_env(env))
+            # Merge environment variables
+            run_env = os.environ.copy()
+            if env:
+                run_env.update(sanitize_env(env))
 
-        # Use explicit shell invocation to avoid shell=True injection
-        if os.name == "nt":
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=run_env,
-            )
-        else:
-            process = await asyncio.create_subprocess_exec(
-                self.shell,
-                "-c",
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=run_env,
-            )
-
-        async def read_stream(stream, stream_name: str):
-            """Read from a stream and yield chunks."""
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                yield StreamingOutput(
-                    text=line.decode("utf-8", errors="replace"),
-                    stream=stream_name,
+            # Use explicit shell invocation to avoid shell=True injection
+            if os.name == "nt":
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=run_env,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    self.shell,
+                    "-c",
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=run_env,
                 )
 
-        # Read both streams concurrently
-        try:
-            async with asyncio.timeout(timeout):
+            # Read both streams concurrently
+            try:
                 # Yield from both streams as they come in
                 for stream in [process.stdout, process.stderr]:
                     if stream:
                         stream_name = "stdout" if stream == process.stdout else "stderr"
-                        async for line in self._read_lines(stream):
+                        async for line in self._read_lines(stream, timeout=float(timeout)):
                             yield StreamingOutput(text=line, stream=stream_name)
 
-                await process.wait()
+                await asyncio.wait_for(process.wait(), timeout=float(timeout))
 
-        except asyncio.TimeoutError:
-            process.kill()
-            yield StreamingOutput(
-                text=f"\n[Command timed out after {timeout}s]\n",
-                stream="stderr",
-            )
+            except asyncio.TimeoutError:
+                process.kill()
+                yield StreamingOutput(
+                    text=f"\n[Command timed out after {timeout}s]\n",
+                    stream="stderr",
+                )
 
-    async def _read_lines(self, stream) -> AsyncIterator[str]:
+        return _stream()
+
+    async def _read_lines(
+        self, stream: asyncio.StreamReader, timeout: float | None = None
+    ) -> AsyncIterator[str]:
         """Read lines from an async stream."""
         while True:
-            line = await stream.readline()
+            if timeout is None:
+                line = await stream.readline()
+            else:
+                line = await asyncio.wait_for(stream.readline(), timeout=timeout)
             if not line:
                 break
             yield line.decode("utf-8", errors="replace")
 
-    async def _collect_stream(self, stream, name: str) -> list[StreamingOutput]:
+    async def _collect_stream(
+        self, stream: asyncio.StreamReader, name: str
+    ) -> list[StreamingOutput]:
         """Collect all output from a stream."""
-        outputs = []
+        outputs: list[StreamingOutput] = []
         async for line in self._read_lines(stream):
             outputs.append(StreamingOutput(text=line, stream=name))
         return outputs

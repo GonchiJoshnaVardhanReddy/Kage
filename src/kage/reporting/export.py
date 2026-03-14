@@ -6,10 +6,9 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-import aiofiles
-
 from kage.core.models import Session
 from kage.reporting.engine import ReportEngine
+from kage.third_party import aiofiles, load_weasyprint_html
 
 OutputFormat = Literal["markdown", "html", "pdf"]
 
@@ -81,11 +80,11 @@ class ReportExporter:
     ) -> Path:
         """Export report as PDF (requires weasyprint)."""
         try:
-            from weasyprint import HTML
-        except ImportError:
+            HTML = load_weasyprint_html()
+        except ImportError as e:
             raise RuntimeError(
                 "PDF export requires weasyprint. Install with: pip install weasyprint"
-            )
+            ) from e
 
         # First render to HTML
         template_name = template or "owasp/report.html.j2"

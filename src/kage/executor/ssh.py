@@ -132,7 +132,7 @@ class SSHExecutor(BaseExecutor):
             working_dir=cwd,
         )
 
-    async def execute_streaming(
+    def execute_streaming(
         self,
         command: str,
         timeout: int = 300,
@@ -140,42 +140,49 @@ class SSHExecutor(BaseExecutor):
         env: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamingOutput]:
         """Execute a command via SSH and stream output."""
-        cwd = working_dir or self.working_dir
+        async def _stream() -> AsyncIterator[StreamingOutput]:
+            cwd = working_dir or self.working_dir
 
-        remote_cmd = command
-        if cwd:
-            remote_cmd = f"cd {shlex.quote(cwd)} && {command}"
-        if env:
-            env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-            remote_cmd = f"{env_prefix} {remote_cmd}"
+            remote_cmd = command
+            if cwd:
+                remote_cmd = f"cd {shlex.quote(cwd)} && {command}"
+            if env:
+                env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+                remote_cmd = f"{env_prefix} {remote_cmd}"
 
-        ssh_args = self._build_ssh_args() + ["--", remote_cmd]
+            ssh_args = self._build_ssh_args() + ["--", remote_cmd]
 
-        process = await asyncio.create_subprocess_exec(
-            *ssh_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            async with asyncio.timeout(timeout):
-                if process.stdout:
-                    async for line in self._read_lines(process.stdout):
-                        yield StreamingOutput(text=line, stream="stdout")
-
-                await process.wait()
-
-        except asyncio.TimeoutError:
-            process.kill()
-            yield StreamingOutput(
-                text=f"\n[SSH command timed out after {timeout}s]\n",
-                stream="stderr",
+            process = await asyncio.create_subprocess_exec(
+                *ssh_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
-    async def _read_lines(self, stream: asyncio.StreamReader) -> AsyncIterator[str]:
+            try:
+                if process.stdout:
+                    async for line in self._read_lines(process.stdout, timeout=float(timeout)):
+                        yield StreamingOutput(text=line, stream="stdout")
+
+                await asyncio.wait_for(process.wait(), timeout=float(timeout))
+
+            except asyncio.TimeoutError:
+                process.kill()
+                yield StreamingOutput(
+                    text=f"\n[SSH command timed out after {timeout}s]\n",
+                    stream="stderr",
+                )
+
+        return _stream()
+
+    async def _read_lines(
+        self, stream: asyncio.StreamReader, timeout: float | None = None
+    ) -> AsyncIterator[str]:
         """Read lines from an async stream."""
         while True:
-            line = await stream.readline()
+            if timeout is None:
+                line = await stream.readline()
+            else:
+                line = await asyncio.wait_for(stream.readline(), timeout=timeout)
             if not line:
                 break
             yield line.decode("utf-8", errors="replace")
