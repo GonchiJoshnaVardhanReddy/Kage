@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import platform
 import re
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.panel import Panel
 
+from kage.ai.base import LLMConfig, LLMMessage
 from kage.ai.providers import create_provider
 from kage.core.conversation import ConversationManager
-from kage.core.intent import Intent, classify_intent, needs_ai_classification
+from kage.core.intent import SECURITY_TOOLS, Intent, classify_intent
 from kage.core.models import Command, CommandStatus, ExecutionEnvironment, Session, Target
-from kage.core.planner import ExecutionPlan, PlanStatus
-from kage.core.router import CommandRouter, ExecutorType
+from kage.core.planner import ExecutionPlan
+from kage.core.router import CommandRouter, ExecutorType, RouteResult
+from kage.mcp import KaliToolsAdvisor, MCPManager
+from kage.security.output_parser import parse_tool_output
+from kage.security.tool_checker import check_tool_installed, get_install_suggestion
 from kage.utils import utcnow
 
 if TYPE_CHECKING:
@@ -46,6 +53,8 @@ class ChatSession:
         # Approval preferences (per-session memory)
         self._approved_all: bool = False
         self._approved_tools: set[str] = set()
+        self._auto_approve_file_create: bool = False
+        self.workspace_root: Path = Path.cwd().resolve()
 
         # Command router
         self._router = CommandRouter(
@@ -54,6 +63,8 @@ class ChatSession:
 
         # Kali executor (lazy init)
         self._kali_executor = None
+        self._mcp_manager: MCPManager | None = None
+        self._kali_tools_advisor: KaliToolsAdvisor | None = None
 
         # Try to resume existing session
         if session_id:
@@ -162,6 +173,209 @@ class ChatSession:
             self.console.print(f"[error]Failed to initialize LLM provider: {e}[/error]")
             return False
 
+    def _is_linux(self) -> bool:
+        """Return True when running on Linux."""
+        return os.name != "nt" and platform.system().lower() == "linux"
+
+    def _ensure_linux_kali_mcp_servers(self) -> None:
+        """Ensure Linux has built-in Kali MCP server entries."""
+        if not self._is_linux():
+            return
+
+        from kage.persistence.config import MCPServerConfig
+
+        existing = {server.name for server in self.config.mcp.servers}
+
+        if "kali_tools_docs" not in existing:
+            self.config.mcp.servers.append(
+                MCPServerConfig(
+                    name="kali_tools_docs",
+                    transport="stdio",
+                    command="kali-tools-mcp",
+                    auto_start=True,
+                )
+            )
+
+        if "kali_execution" not in existing:
+            self.config.mcp.servers.append(
+                MCPServerConfig(
+                    name="kali_execution",
+                    transport="sse",
+                    url="http://127.0.0.1:5000",
+                    auto_start=True,
+                )
+            )
+
+    async def _init_mcp(self) -> None:
+        """Initialize MCP manager and Kali tools advisor."""
+        if not self.config.mcp.enabled:
+            return
+
+        self._ensure_linux_kali_mcp_servers()
+        self._mcp_manager = MCPManager(self.config.mcp)
+        try:
+            await self._mcp_manager.start()
+            self._kali_tools_advisor = KaliToolsAdvisor(self._mcp_manager)
+        except Exception as e:
+            self.console.print(f"[warning]MCP initialization failed: {e}[/warning]")
+            self._mcp_manager = None
+            self._kali_tools_advisor = None
+
+    def _is_within_workspace(self, path: Path) -> bool:
+        """Check whether a path is inside the current workspace root."""
+        try:
+            path.relative_to(self.workspace_root)
+            return True
+        except ValueError:
+            return False
+
+    def _resolve_workspace_path(self, path_str: str) -> Path | None:
+        """Resolve a user path and enforce workspace-only access."""
+        raw = Path(path_str).expanduser()
+        resolved = (raw if raw.is_absolute() else self.workspace_root / raw).resolve()
+        if self._is_within_workspace(resolved):
+            return resolved
+        self.console.print(
+            f"[error]Access outside workspace is blocked: {resolved}[/error]\n"
+            f"[muted]Workspace: {self.workspace_root}[/muted]"
+        )
+        return None
+
+    def _log_action(self, action: str, target: str) -> None:
+        """Emit a concise step log line."""
+        self.console.print(f"[info]● {action} {target}[/info]")
+
+    def _summarize_command_result(self, cmd: Command) -> str:
+        """Create a concise, user-facing command execution summary."""
+        if cmd.status == CommandStatus.TIMEOUT:
+            return "Command timed out before completion."
+        if cmd.status == CommandStatus.FAILED:
+            return f"Command failed. {cmd.stderr[:140] if cmd.stderr else 'Check error output for details.'}"
+        if cmd.exit_code not in (None, 0):
+            return f"Command exited with code {cmd.exit_code}."
+
+        stdout_lines = len((cmd.stdout or "").splitlines())
+        stderr_lines = len((cmd.stderr or "").splitlines())
+        if stdout_lines == 0 and stderr_lines == 0:
+            return "Command completed successfully with no output."
+        return (
+            f"Command completed successfully (exit {cmd.exit_code}). "
+            f"Output: {stdout_lines} stdout line(s), {stderr_lines} stderr line(s)."
+        )
+
+    def _remember_security_target(self, target: str) -> None:
+        """Store discovered targets in session memory."""
+        mem = self.session.metadata.setdefault("security_memory", {})
+        targets = mem.setdefault("targets", [])
+        if target not in targets:
+            targets.append(target)
+
+    def _remember_security_result(self, command: Command, tool_name: str | None = None) -> None:
+        """Store security command output snippets in session memory."""
+        mem = self.session.metadata.setdefault("security_memory", {})
+        recon = mem.setdefault("recon_results", [])
+        recon.append(
+            {
+                "command": command.command,
+                "status": command.status.value,
+                "exit_code": command.exit_code,
+                "stdout_preview": (command.stdout or "")[:500],
+                "stderr_preview": (command.stderr or "")[:300],
+            }
+        )
+        # Keep memory bounded.
+        if len(recon) > 20:
+            del recon[:-20]
+
+        if tool_name:
+            parsed_store = mem.setdefault("parsed_outputs", [])
+            parsed_source = command.stdout or command.stderr or ""
+            parsed_result = parse_tool_output(tool_name, parsed_source)
+            if parsed_result.get("supported"):
+                parsed_store.append(parsed_result)
+                if len(parsed_store) > 20:
+                    del parsed_store[:-20]
+
+    def _ensure_tool_installed(self, tool_name: str) -> bool:
+        """Ensure a command-line tool is installed before execution."""
+        from rich.prompt import Confirm
+
+        check = check_tool_installed(tool_name)
+        if check["installed"]:
+            return True
+
+        suggestion = get_install_suggestion(tool_name)
+        self.console.print()
+        self.console.print(f"[warning]Tool '{tool_name}' is not installed.[/warning]")
+        self.console.print(f"[muted]Suggested installation: {suggestion}[/muted]")
+
+        # Keep behavior explicit and safe: ask before auto-install.
+        if not self._is_linux():
+            self.console.print("[muted]Auto-install is only supported on Linux.[/muted]")
+            return False
+
+        if not Confirm.ask("[warning]Install tool now?[/warning]", default=False):
+            return False
+
+        from kage.executor import LocalExecutor
+
+        install_cmd = f"sudo apt install -y {tool_name}"
+        self.console.print(f"[info]Installing via: {install_cmd}[/info]")
+        result = asyncio.run(LocalExecutor().execute(install_cmd, timeout=900))
+        if result.stdout:
+            self.console.print(result.stdout[:1200], highlight=False)
+        if result.stderr:
+            self.console.print(f"[warning]{result.stderr[:600]}[/warning]", highlight=False)
+
+        post = check_tool_installed(tool_name)
+        if not post["installed"]:
+            self.console.print(f"[error]Installation failed or '{tool_name}' still unavailable.[/error]")
+            return False
+
+        self.console.print(f"[success]Tool '{tool_name}' is installed at {post['path']}[/success]")
+        return True
+
+    async def _build_security_mcp_context(self, user_input: str) -> str | None:
+        """Use Kali docs MCP to gather tool guidance for security requests."""
+        if not self._is_linux():
+            return None
+        if not self._kali_tools_advisor or not self._kali_tools_advisor.is_available():
+            return None
+
+        workflow = await self._kali_tools_advisor.recommend_tools(user_input)
+        if not workflow.has_recommendations:
+            return None
+
+        lines = [
+            "Kali docs lookup workflow:",
+            f"1) search_kali_tools(query={workflow.query!r})",
+        ]
+
+        context_parts = [
+            "Use the following Kali MCP documentation context when proposing commands.",
+        ]
+
+        for idx, rec in enumerate(workflow.recommendations, start=1):
+            lines.append(f"{idx + 1}) tool: {rec.tool_name} — {rec.rationale}")
+            lines.append(f"   get_tool_usage({rec.tool_name!r}) used for syntax.")
+            if rec.suggested_command:
+                lines.append(f"   suggested command: {rec.suggested_command}")
+            context_parts.append(f"Tool: {rec.tool_name}")
+            if rec.details:
+                context_parts.append(f"Details: {rec.details[:600]}")
+            if rec.usage:
+                context_parts.append(f"Usage: {rec.usage[:800]}")
+
+        self.console.print()
+        self.console.print("[info]Kali Tools MCP workflow[/info]")
+        for line in lines:
+            self.console.print(f"[muted]{line}[/muted]")
+
+        mem = self.session.metadata.setdefault("security_memory", {})
+        mem["last_kali_tools"] = [rec.tool_name for rec in workflow.recommendations]
+
+        return "\n".join(context_parts)
+
     # Available slash commands for autocomplete
     COMMANDS = {
         "help": "Show this help message",
@@ -183,7 +397,6 @@ class ChatSession:
         "saves": "List all saved sessions",
         "export": "Export session to file",
         "import": "Import a session from file",
-        # File operations use @ prefix (e.g., @read file.txt)
     }
 
     def _setup_completer(self) -> None:
@@ -192,11 +405,9 @@ class ChatSession:
             import readline
 
             commands = ["/" + cmd for cmd in self.COMMANDS]
-            at_commands = ["@read", "@write", "@edit", "@create", "@ls"]
-            all_completions = commands + at_commands
 
             def completer(text: str, state: int) -> str | None:
-                options = [c for c in all_completions if c.startswith(text)]
+                options = [c for c in commands if c.startswith(text)]
                 return options[state] if state < len(options) else None
 
             readline.set_completer(completer)
@@ -436,22 +647,144 @@ class ChatSession:
 [command]/run[/command]           - Execute pending commands
 [command]/history[/command]       - Show command history
 
-[header]File Operations (@ prefix)[/header]
+[header]Natural Language File Tools[/header]
 
-[command]@read <path>[/command]   - Read and display a file
-[command]@write <path> <text>[/command] - Write text to a file
-[command]@edit <path>[/command]   - Interactive file editor
-[command]@create <path>[/command] - Create a new file
-[command]@ls [path][/command]     - List directory contents
+Use plain language for file operations:
+• "show server.py"
+• "list files in src"
+• "create app.py"
+• "add logging to server.py"
 
 [header]Tips[/header]
 
 • Type partial commands to see suggestions (e.g., /h → /help, /history, /hack)
-• Use @ for file operations (e.g., @read config.yaml, @ls /tmp)
+• Kage uses internal file tools automatically from natural language
 • Use /save <name> to name your sessions for easy recall
 • Use /load <name> to continue where you left off
 """
         self.console.print(help_text)
+
+    def _extract_file_path_from_text(self, text: str) -> str | None:
+        """Extract a likely file path from user text."""
+        quoted = re.search(r"""["']([^"']+\.[\w]+)["']""", text)
+        if quoted:
+            return quoted.group(1).strip()
+
+        path_like = re.search(
+            r"(?<!\S)([.\w\\/\-]+?\.[a-zA-Z0-9]{1,8})(?!\S)",
+            text,
+        )
+        if path_like:
+            return path_like.group(1).strip()
+
+        return None
+
+    async def _ai_edit_file(self, path_str: str, request: str) -> bool:
+        """Perform an AI-driven file edit with diff preview and approval."""
+        import difflib
+
+        from kage.cli.ui.prompts import prompt_file_approval
+
+        file_path = self._resolve_workspace_path(path_str)
+        if file_path is None:
+            return True
+        if not file_path.exists() or not file_path.is_file():
+            self.console.print(f"[error]File not found: {file_path}[/error]")
+            return True
+
+        self._log_action("Reading file", str(file_path.relative_to(self.workspace_root)))
+        original_content = file_path.read_text(encoding="utf-8", errors="replace")
+
+        edit_prompt = (
+            "You are applying a precise code edit.\n"
+            "Given the user request and file content, return the complete updated file content only.\n"
+            "Do not include explanations.\n"
+            "Output format:\n"
+            "```updated_file\n"
+            "<full updated file content>\n"
+            "```\n\n"
+            f"User request:\n{request}\n\n"
+            f"File path:\n{file_path.name}\n\n"
+            "Current file content:\n"
+            "```text\n"
+            f"{original_content}\n"
+            "```"
+        )
+
+        response = await self.provider.complete(
+            messages=[
+                LLMMessage(role="system", content="You are a precise code editor."),
+                LLMMessage(role="user", content=edit_prompt),
+            ],
+            config=LLMConfig(
+                model=self.config.llm.model,
+                temperature=0.1,
+                max_tokens=self.config.llm.max_tokens,
+            ),
+        )
+
+        block_match = re.search(
+            r"```updated_file\s*(.*?)```",
+            response.content,
+            re.DOTALL | re.IGNORECASE,
+        )
+        updated_content = block_match.group(1).strip("\n") if block_match else response.content.strip()
+
+        if updated_content == original_content:
+            self.console.print("[muted]No changes proposed.[/muted]")
+            return True
+
+        diff_lines = list(
+            difflib.unified_diff(
+                original_content.splitlines(),
+                updated_content.splitlines(),
+                fromfile=f"a/{file_path.name}",
+                tofile=f"b/{file_path.name}",
+                lineterm="",
+            )
+        )
+        diff_preview = "\n".join(diff_lines) if diff_lines else "(No changes)"
+
+        if not prompt_file_approval(self.console, "edit", str(file_path), diff_preview):
+            self.console.print("[muted]Edit cancelled.[/muted]")
+            return True
+
+        self._log_action("Editing file", str(file_path.relative_to(self.workspace_root)))
+        file_path.write_text(updated_content, encoding="utf-8")
+        self.console.print(f"[success]Updated: {file_path}[/success]")
+        return True
+
+    async def _handle_natural_language_file_request(self, user_input: str) -> bool:
+        """Handle plain-language file actions using internal tools."""
+        lower = user_input.strip().lower()
+
+        read_prefixes = ("show ", "read ", "open ", "view ")
+        if lower.startswith(read_prefixes):
+            path = self._extract_file_path_from_text(user_input) or user_input.split(maxsplit=1)[1]
+            self._read_file(path)
+            return True
+
+        if lower.startswith(("list files", "show files", "list directory", "show directory")):
+            if " in " in user_input:
+                directory = user_input.split(" in ", maxsplit=1)[1].strip()
+            else:
+                directory = "."
+            self._list_directory(directory)
+            return True
+
+        if lower.startswith(("create ", "make file ", "new file ")):
+            path = self._extract_file_path_from_text(user_input)
+            if path:
+                self._create_file(path)
+                return True
+
+        edit_keywords = ("add ", "update ", "modify ", "change ", "refactor ", "fix ", "remove ")
+        if lower.startswith(edit_keywords):
+            path = self._extract_file_path_from_text(user_input)
+            if path:
+                return await self._ai_edit_file(path, user_input)
+
+        return False
 
     def _show_scope(self) -> None:
         """Display current scope."""
@@ -459,15 +792,18 @@ class ChatSession:
 
         self.console.print(create_scope_panel(self.session.scope))
 
-    def _check_and_prompt_scope(self, user_input: str) -> None:
-        """Check if scope is needed and prompt user to define it."""
+    def _check_and_prompt_scope(self, user_input: str) -> bool:
+        """Check scope/authorization for security requests."""
         import ipaddress
-
-        from kage.cli.ui.prompts import prompt_scope_definition, prompt_scope_input
-
-        # Try to extract a target from the input
         import re as _re
 
+        from kage.cli.ui.prompts import (
+            prompt_scope_authorization,
+            prompt_scope_definition,
+            prompt_scope_input,
+        )
+
+        # Try to extract a target from the input
         target = None
         # Match IPs
         ip_match = _re.search(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?)\b", user_input)
@@ -483,7 +819,9 @@ class ChatSession:
                     target = candidate
 
         if not target:
-            return
+            return True
+
+        self._remember_security_target(target)
 
         choice = prompt_scope_definition(self.console, target)
 
@@ -505,6 +843,7 @@ class ChatSession:
                 Target(value=target, target_type=target_type)
             )
             self.console.print(f"[success]Added {target} to scope.[/success]")
+            return True
 
         elif choice == "define":
             scope_input = prompt_scope_input(self.console)
@@ -514,9 +853,17 @@ class ChatSession:
                     f"[success]Scope updated: "
                     f"{len(self.session.scope.targets)} target(s)[/success]"
                 )
+                return True
 
         else:
-            self.console.print("[muted]Proceeding without scope.[/muted]")
+            approved = prompt_scope_authorization(self.console, target)
+            if not approved:
+                self.console.print("[muted]Security request cancelled: scope not authorized.[/muted]")
+                return False
+            self.console.print("[warning]Proceeding without explicit scope definition.[/warning]")
+            return True
+
+        return False
 
     def _show_findings(self) -> None:
         """Display findings."""
@@ -696,10 +1043,7 @@ class ChatSession:
             self._session_storage = SessionStorage()
 
         # Determine output path and format
-        if args:
-            output_path = Path(args)
-        else:
-            output_path = Path(f"session_{self.session.id[:8]}.md")
+        output_path = Path(args) if args else Path(f"session_{self.session.id[:8]}.md")
 
         fmt = "markdown" if output_path.suffix == ".md" else "json"
 
@@ -799,9 +1143,9 @@ class ChatSession:
 
     def _read_file(self, path_str: str) -> None:
         """Read and display a file's contents."""
-        from pathlib import Path
-
-        file_path = Path(path_str).expanduser().resolve()
+        file_path = self._resolve_workspace_path(path_str)
+        if file_path is None:
+            return
         if not file_path.exists():
             self.console.print(f"[error]File not found: {file_path}[/error]")
             return
@@ -810,6 +1154,7 @@ class ChatSession:
             return
 
         try:
+            self._log_action("Reading file", str(file_path.relative_to(self.workspace_root)))
             content = file_path.read_text(encoding="utf-8", errors="replace")
             from rich.syntax import Syntax
 
@@ -857,18 +1202,35 @@ class ChatSession:
 
     def _write_file(self, path_str: str, content: str) -> None:
         """Write content to a file with approval."""
-        from pathlib import Path
+        from kage.cli.ui.prompts import (
+            FileCreateApprovalChoice,
+            prompt_file_approval,
+            prompt_file_create_approval,
+        )
 
-        from kage.cli.ui.prompts import prompt_file_approval
-
-        file_path = Path(path_str).expanduser().resolve()
+        file_path = self._resolve_workspace_path(path_str)
+        if file_path is None:
+            return
         action = "overwrite" if file_path.exists() else "create"
 
-        if not prompt_file_approval(self.console, action, str(file_path), content):
+        if action == "create":
+            if not self._auto_approve_file_create:
+                create_choice = prompt_file_create_approval(self.console, str(file_path), content)
+                if create_choice == FileCreateApprovalChoice.CANCEL:
+                    self.console.print("[muted]Write cancelled.[/muted]")
+                    return
+                if create_choice == FileCreateApprovalChoice.AUTO_APPROVE_CREATES:
+                    self._auto_approve_file_create = True
+                    self.console.print(
+                        "[info]Auto-approving file creation for this session.[/info]"
+                    )
+        elif not prompt_file_approval(self.console, action, str(file_path), content):
             self.console.print("[muted]Write cancelled.[/muted]")
             return
 
         try:
+            verb = "Creating file" if action == "create" else "Writing file"
+            self._log_action(verb, str(file_path.relative_to(self.workspace_root)))
             file_path.parent.mkdir(parents=True, exist_ok=True)
             content = content.replace("\\n", "\n").replace("\\t", "\t")
             file_path.write_text(content, encoding="utf-8")
@@ -879,20 +1241,23 @@ class ChatSession:
 
     def _edit_file(self, path_str: str) -> None:
         """Open a file for interactive editing (append/replace line)."""
-        from pathlib import Path
+        from kage.cli.ui.prompts import prompt_file_approval
 
-        file_path = Path(path_str).expanduser().resolve()
+        file_path = self._resolve_workspace_path(path_str)
+        if file_path is None:
+            return
         if not file_path.exists():
             self.console.print(f"[error]File not found: {file_path}[/error]")
             return
 
         try:
-            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            original_content = file_path.read_text(encoding="utf-8", errors="replace")
+            lines = original_content.splitlines()
+            self._log_action("Editing file", str(file_path.relative_to(self.workspace_root)))
 
             from rich.syntax import Syntax
 
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-            syntax = Syntax(content, "text", line_numbers=True, theme="monokai")
+            syntax = Syntax(original_content, "text", line_numbers=True, theme="monokai")
             self.console.print(
                 Panel(syntax, title=f"✏️ Editing: {file_path.name}", border_style="yellow")
             )
@@ -915,7 +1280,30 @@ class ChatSession:
 
                 if action.lower() == "q":
                     if modified:
-                        file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                        import difflib
+
+                        updated_content = "\n".join(lines) + "\n"
+                        diff_lines = list(
+                            difflib.unified_diff(
+                                original_content.splitlines(),
+                                updated_content.splitlines(),
+                                fromfile=f"a/{file_path.name}",
+                                tofile=f"b/{file_path.name}",
+                                lineterm="",
+                            )
+                        )
+                        diff_preview = "\n".join(diff_lines) if diff_lines else "(No changes)"
+
+                        if not prompt_file_approval(
+                            self.console,
+                            "edit",
+                            str(file_path),
+                            diff_preview,
+                        ):
+                            self.console.print("[muted]Edit cancelled. Changes not saved.[/muted]")
+                            break
+
+                        file_path.write_text(updated_content, encoding="utf-8")
                         self.console.print(f"[success]Saved: {file_path}[/success]")
                     break
                 elif action.lower() == "x":
@@ -972,14 +1360,20 @@ class ChatSession:
 
     def _create_file(self, path_str: str) -> None:
         """Create a new file with interactive content input."""
-        from pathlib import Path
+        from kage.cli.ui.prompts import (
+            FileCreateApprovalChoice,
+            prompt_file_create_approval,
+        )
 
-        file_path = Path(path_str).expanduser().resolve()
+        file_path = self._resolve_workspace_path(path_str)
+        if file_path is None:
+            return
         if file_path.exists():
             self.console.print(f"[error]File already exists: {file_path}[/error]")
             self.console.print("[muted]Use /edit to modify or /write to overwrite.[/muted]")
             return
 
+        self._log_action("Creating file", str(file_path.relative_to(self.workspace_root)))
         self.console.print(f"[info]Creating: {file_path}[/info]")
         self.console.print(
             "[muted]Enter content (type ':done' on a new line to finish, ':cancel' to abort):[/muted]"
@@ -999,11 +1393,16 @@ class ChatSession:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             content = "\n".join(lines) + "\n"
 
-            from kage.cli.ui.prompts import prompt_file_approval
-
-            if not prompt_file_approval(self.console, "create", str(file_path), content):
-                self.console.print("[muted]File creation cancelled.[/muted]")
-                return
+            if not self._auto_approve_file_create:
+                create_choice = prompt_file_create_approval(self.console, str(file_path), content)
+                if create_choice == FileCreateApprovalChoice.CANCEL:
+                    self.console.print("[muted]File creation cancelled.[/muted]")
+                    return
+                if create_choice == FileCreateApprovalChoice.AUTO_APPROVE_CREATES:
+                    self._auto_approve_file_create = True
+                    self.console.print(
+                        "[info]Auto-approving file creation for this session.[/info]"
+                    )
 
             file_path.write_text(content, encoding="utf-8")
             self.console.print(f"[success]Created: {file_path}[/success]")
@@ -1013,11 +1412,11 @@ class ChatSession:
 
     def _list_directory(self, path_str: str) -> None:
         """List contents of a directory."""
-        from pathlib import Path
-
         from rich.table import Table
 
-        dir_path = Path(path_str).expanduser().resolve()
+        dir_path = self._resolve_workspace_path(path_str)
+        if dir_path is None:
+            return
         if not dir_path.exists():
             self.console.print(f"[error]Path not found: {dir_path}[/error]")
             return
@@ -1026,6 +1425,7 @@ class ChatSession:
             return
 
         try:
+            self._log_action("Listing files in", str(dir_path.relative_to(self.workspace_root)))
             entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
 
             table = Table(title=f"📁 {dir_path}", header_style="table.header")
@@ -1506,6 +1906,8 @@ class ChatSession:
             self.console.print("[muted]No pending commands.[/muted]")
             return
 
+        from rich.prompt import Confirm
+
         from kage.cli.ui.prompts import (
             ApprovalChoice,
             prompt_command_approval,
@@ -1513,6 +1915,7 @@ class ChatSession:
             prompt_plan_edit,
         )
         from kage.security import ApprovalDecision, ApprovalWorkflow
+        from kage.security.safemode import DangerLevel
 
         # Create approval workflow
         workflow = ApprovalWorkflow(
@@ -1557,6 +1960,7 @@ class ChatSession:
         # --- Execute each command ---
         for i, cmd in enumerate(commands_to_run):
             step_label = f"[{i + 1}/{len(commands_to_run)}]" if len(commands_to_run) > 1 else ""
+            preliminary_route = self._router.route(cmd.command)
 
             self.console.print()
             if step_label:
@@ -1564,6 +1968,29 @@ class ChatSession:
             self.console.print(f"[command]$ {cmd.command}[/command]")
             if cmd.description:
                 self.console.print(f"[muted]{cmd.description}[/muted]")
+
+            if preliminary_route.tool_name and not self._ensure_tool_installed(
+                preliminary_route.tool_name
+            ):
+                cmd.status = CommandStatus.REJECTED
+                self.session.commands.append(cmd)
+                if cmd in self._pending_commands:
+                    self._pending_commands.remove(cmd)
+                self.console.print("[muted]Skipped (missing tool).[/muted]")
+                continue
+
+            if (
+                preliminary_route.tool_name
+                and preliminary_route.tool_name in SECURITY_TOOLS
+                and not self.session.scope.targets
+                and not self._check_and_prompt_scope(cmd.command)
+            ):
+                cmd.status = CommandStatus.REJECTED
+                self.session.commands.append(cmd)
+                if cmd in self._pending_commands:
+                    self._pending_commands.remove(cmd)
+                self.console.print("[muted]Skipped[/muted]")
+                continue
 
             # Run through security approval workflow
             result = asyncio.run(workflow.evaluate(cmd))
@@ -1588,6 +2015,26 @@ class ChatSession:
                 self.console.print()
                 for warning in result.warnings:
                     self.console.print(f"[warning]{warning}[/warning]")
+
+            if (
+                result.safe_mode_result
+                and result.safe_mode_result.danger_level == DangerLevel.DANGEROUS
+            ):
+                self.console.print(
+                    Panel(
+                        "[danger]WARNING: This command may impact system stability or targets.[/danger]\n"
+                        f"[command]{cmd.command}[/command]",
+                        title="[unsafe]⚠ Dangerous Command[/unsafe]",
+                        border_style="danger",
+                    )
+                )
+                if not Confirm.ask("[danger]Continue?[/danger]", default=False):
+                    cmd.status = CommandStatus.REJECTED
+                    self.session.commands.append(cmd)
+                    if cmd in self._pending_commands:
+                        self._pending_commands.remove(cmd)
+                    self.console.print("[muted]Skipped[/muted]")
+                    continue
 
             # --- Enhanced approval (4-option) ---
             if result.decision == ApprovalDecision.NEEDS_CONFIRMATION:
@@ -1618,6 +2065,7 @@ class ChatSession:
             # --- Route and execute ---
             cmd.status = CommandStatus.APPROVED
             route = self._router.route(cmd.command)
+            self._log_action("Running command", cmd.command)
 
             if route.executor_type == ExecutorType.KALI_MCP:
                 cmd.environment = ExecutionEnvironment.KALI_MCP
@@ -1631,7 +2079,7 @@ class ChatSession:
 
     async def _execute_command(self, cmd: Command, route: RouteResult | None = None) -> None:
         """Execute a single command using the appropriate executor."""
-        from kage.core.router import ExecutorType, RouteResult
+        from kage.core.router import ExecutorType
         from kage.executor import LocalExecutor
 
         if route is None:
@@ -1647,7 +2095,7 @@ class ChatSession:
         # Select executor based on routing
         if route.executor_type == ExecutorType.KALI_MCP:
             try:
-                from kage.executor.kali import KaliExecutor, KaliMCPError
+                from kage.executor.kali import KaliExecutor
 
                 if self._kali_executor is None:
                     self._kali_executor = KaliExecutor(
@@ -1752,7 +2200,11 @@ class ChatSession:
                 cmd.completed_at = utcnow()
                 self.console.print(f"[error]Failed: {e}[/error]")
 
+        self.console.print(f"[subtitle]Summary:[/subtitle] {self._summarize_command_result(cmd)}")
+
         # Add to session history
+        if route and route.tool_name and route.tool_name in SECURITY_TOOLS:
+            self._remember_security_result(cmd, tool_name=route.tool_name)
         self.session.commands.append(cmd)
 
     async def _try_reconnect(self) -> bool:
@@ -1787,6 +2239,9 @@ class ChatSession:
             self.console.print("[error]AI not connected. Restart session.[/error]")
             return
 
+        if await self._handle_natural_language_file_request(user_input):
+            return
+
         # --- Intent detection ---
         intent_result = classify_intent(user_input)
 
@@ -1800,8 +2255,16 @@ class ChatSession:
             self.console.print(f"\n[muted]Intent:[/muted] {intent_label}")
 
         # --- Scope auto-prompt for security intent ---
-        if intent_result.intent == Intent.SECURITY and not self.session.scope.targets:
-            self._check_and_prompt_scope(user_input)
+        security_context: str | None = None
+        if (
+            intent_result.intent == Intent.SECURITY
+            and not self.session.scope.targets
+            and not self._check_and_prompt_scope(user_input)
+        ):
+            return
+
+        if intent_result.intent == Intent.SECURITY:
+            security_context = await self._build_security_mcp_context(user_input)
 
         self.console.print()
         self.console.print("[assistant]KAGE:[/assistant] ", end="")
@@ -1810,6 +2273,7 @@ class ChatSession:
             response_text, commands = await self.conversation.send_message(
                 user_input,
                 on_chunk=lambda c: self.console.print(c, end="", highlight=False),
+                additional_context=security_context,
             )
 
             # If nothing was streamed (error/empty), print the response text directly
@@ -1845,6 +2309,7 @@ class ChatSession:
         # Initialize provider
         if not asyncio.run(self._init_provider()):
             return
+        asyncio.run(self._init_mcp())
 
         # Set up tab completion for slash commands
         self._setup_completer()
@@ -1880,11 +2345,6 @@ class ChatSession:
                         break
                     continue
 
-                # Handle @ file operations
-                if user_input.startswith("@"):
-                    self._handle_at_command(user_input)
-                    continue
-
                 # Intercept identity questions and answer locally
                 if self._is_identity_question(user_input):
                     self._show_identity()
@@ -1902,6 +2362,8 @@ class ChatSession:
         # Cleanup
         if self.provider:
             asyncio.run(self.provider.close())
+        if self._mcp_manager:
+            asyncio.run(self._mcp_manager.stop())
 
         self.console.print()
         self.console.print("[info]Session ended.[/info]")

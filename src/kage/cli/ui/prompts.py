@@ -22,6 +22,15 @@ class ApprovalChoice(str, Enum):
     CANCEL = "4"
 
 
+class FileCreateApprovalChoice(str, Enum):
+    """User approval choices for file creation."""
+
+    ALWAYS_ASK = "1"
+    APPROVE_ONCE = "2"
+    AUTO_APPROVE_CREATES = "3"
+    CANCEL = "4"
+
+
 def prompt_user_input(console: Console) -> str:
     """Display the user input prompt."""
     console.print()
@@ -103,7 +112,7 @@ def prompt_file_approval(
     lines.append(f"[subtitle]Action:[/subtitle] [warning]{action}[/warning]")
     lines.append(f"[subtitle]File:[/subtitle] [command]{file_path}[/command]")
     if content_preview:
-        preview = content_preview[:200] + ("..." if len(content_preview) > 200 else "")
+        preview = content_preview[:1200] + ("..." if len(content_preview) > 1200 else "")
         lines.append(f"\n[muted]{preview}[/muted]")
 
     console.print(Panel(
@@ -118,6 +127,45 @@ def prompt_file_approval(
         default=False,
         console=console,
     )
+
+
+def prompt_file_create_approval(
+    console: Console,
+    file_path: str,
+    content_preview: str | None = None,
+) -> FileCreateApprovalChoice:
+    """Prompt user to approve file creation with session-level options."""
+    console.print()
+
+    lines = []
+    lines.append("[subtitle]Action:[/subtitle] [warning]create[/warning]")
+    lines.append(f"[subtitle]File:[/subtitle] [command]{file_path}[/command]")
+    if content_preview:
+        preview = content_preview[:1200] + ("..." if len(content_preview) > 1200 else "")
+        lines.append(f"\n[muted]{preview}[/muted]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title="[warning]📄 AI wants to create file[/warning]",
+        border_style="yellow",
+        padding=(1, 2),
+    ))
+
+    console.print()
+    console.print("[bold]Options:[/bold]")
+    console.print("  [cyan][1][/cyan] Always ask")
+    console.print("  [yellow][2][/yellow] Approve once")
+    console.print("  [green][3][/green] Auto-approve file creates (this session)")
+    console.print("  [red][4][/red] Cancel")
+    console.print()
+
+    choice = Prompt.ask(
+        "[prompt]Choose[/prompt]",
+        choices=["1", "2", "3", "4"],
+        default="1",
+        console=console,
+    )
+    return FileCreateApprovalChoice(choice)
 
 
 def prompt_plan_approval(
@@ -229,6 +277,26 @@ def prompt_scope_input(console: Console) -> str:
     console.print()
     return Prompt.ask(
         "[prompt]Enter scope (comma-separated IPs, CIDRs, domains)[/prompt]",
+        console=console,
+    )
+
+
+def prompt_scope_authorization(console: Console, target: str) -> bool:
+    """Ask user to confirm authorization when scope is not explicitly defined."""
+    console.print()
+    console.print(Panel(
+        Text.from_markup(
+            f"[warning]Target detected:[/warning] [ip]{target}[/ip]\n\n"
+            "[warning]No scope defined.[/warning]\n"
+            "Please confirm this target is authorized for testing."
+        ),
+        title="[warning]🎯 Authorization Check[/warning]",
+        border_style="yellow",
+        padding=(1, 2),
+    ))
+    return Confirm.ask(
+        "[warning]Authorized target?[/warning]",
+        default=False,
         console=console,
     )
 

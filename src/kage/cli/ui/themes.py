@@ -73,11 +73,12 @@ KAGE_THEME = Theme(
 KAGE_LOGO = """[brand]
 ██╗  ██╗ █████╗  ██████╗ ███████╗
 ██║ ██╔╝██╔══██╗██╔════╝ ██╔════╝
-█████╔╝ ███████║██║  ███╗█████╗  
-██╔═██╗ ██╔══██║██║   ██║██╔══╝  
+█████╔╝ ███████║██║  ███╗█████╗
+██╔═██╗ ██╔══██║██║   ██║██╔══╝
 ██║  ██╗██║  ██║╚██████╔╝███████╗
 ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝[/brand]
-[brand.accent]AI-Powered Penetration Testing Assistant[/brand.accent]
+[brand.accent]Shadow Security CLI[/brand.accent]
 """
 
 KAGE_LOGO_SMALL = "[brand]KAGE[/brand] [brand.accent]// Shadow Security[/brand.accent]"
+

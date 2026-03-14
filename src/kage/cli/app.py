@@ -199,23 +199,6 @@ def launch(
     console.print()
 
     console.clear()
-    console.print(KAGE_LOGO)
-
-    from kage.cli.ui.panels import create_status_panel
-
-    console.print(
-        create_status_panel(
-            safe_mode=config.security.safe_mode,
-            scope=None,
-            session_id=None,
-            provider=config.llm.provider,
-            model=config.llm.model,
-        )
-    )
-
-    console.print()
-    console.print("[info]Type your message or [command]/help[/command] for commands.[/info]")
-    console.print("[muted]Press Ctrl+C to exit.[/muted]")
 
     from kage.cli.commands.chat import chat_loop
 
@@ -277,27 +260,7 @@ def chat(
     if safe_mode is not None:
         config.security.safe_mode = safe_mode
 
-    # Display header
-    console.clear()
-    console.print(KAGE_LOGO)
-
-    from kage.cli.ui.panels import create_status_panel
-
-    console.print(
-        create_status_panel(
-            safe_mode=config.security.safe_mode,
-            scope=None,  # Scope is parsed later in chat_loop from --scope arg
-            session_id=session_id,
-            provider=config.llm.provider,
-            model=config.llm.model,
-        )
-    )
-
-    console.print()
-    console.print("[info]Type your message or [command]/help[/command] for commands.[/info]")
-    console.print("[muted]Press Ctrl+C to exit.[/muted]")
-
-    # Start chat loop
+    # Start chat loop (banner is rendered inside chat session)
     from kage.cli.commands.chat import chat_loop
 
     chat_loop(console, config, session_id, scope)
@@ -409,10 +372,7 @@ def session(
         # Launch chat with session ID
         config = KageConfig.load()
 
-        from kage.cli.ui.themes import KAGE_LOGO
-
         console.clear()
-        console.print(KAGE_LOGO)
 
         from kage.cli.commands.chat import chat_loop
 

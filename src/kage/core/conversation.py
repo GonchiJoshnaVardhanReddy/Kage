@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-logger = logging.getLogger(__name__)
 
 from kage.ai.base import BaseLLMProvider, LLMConfig, LLMMessage
 from kage.ai.prompts import build_context_message, build_system_prompt, parse_response
@@ -17,6 +16,8 @@ from kage.utils import utcnow
 
 if TYPE_CHECKING:
     from kage.persistence.config import KageConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -46,7 +47,11 @@ class ConversationManager:
             max_tokens=config.llm.max_tokens,
         )
 
-    def _build_messages(self, user_message: str) -> list[LLMMessage]:
+    def _build_messages(
+        self,
+        user_message: str,
+        additional_context: str | None = None,
+    ) -> list[LLMMessage]:
         """Build the message list for the LLM."""
         messages: list[LLMMessage] = []
 
@@ -78,6 +83,20 @@ class ConversationManager:
             if context:
                 messages.append(LLMMessage(role="system", content=context))
 
+        if additional_context:
+            messages.append(LLMMessage(role="system", content=additional_context))
+
+        security_memory = self.session.metadata.get("security_memory", {})
+        parsed_outputs = security_memory.get("parsed_outputs", [])
+        if parsed_outputs:
+            recent = parsed_outputs[-5:]
+            parsed_lines = ["## Parsed Tool Outputs (recent)"]
+            for item in recent:
+                tool = item.get("tool", "unknown")
+                parsed = item.get("parsed")
+                parsed_lines.append(f"- {tool}: {json.dumps(parsed, default=str)[:500]}")
+            messages.append(LLMMessage(role="system", content="\n".join(parsed_lines)))
+
         # Add conversation history (limited)
         for msg in self.session.messages[-self.config.session.max_history :]:
             if msg.role == MessageRole.SYSTEM:
@@ -98,6 +117,7 @@ class ConversationManager:
         self,
         user_message: str,
         on_chunk: Callable[[str], None] | None = None,
+        additional_context: str | None = None,
     ) -> tuple[str, list[Command]]:
         """Send a message and get a response.
 
@@ -109,7 +129,7 @@ class ConversationManager:
         self.session.updated_at = utcnow()
 
         # Build messages for LLM
-        messages = self._build_messages(user_message)
+        messages = self._build_messages(user_message, additional_context=additional_context)
 
         # Stream response
         handler = StreamHandler(
@@ -145,14 +165,18 @@ class ConversationManager:
 
         return response_text, commands
 
-    async def send_message_sync(self, user_message: str) -> tuple[str, list[Command]]:
+    async def send_message_sync(
+        self,
+        user_message: str,
+        additional_context: str | None = None,
+    ) -> tuple[str, list[Command]]:
         """Send a message without streaming (for simpler use cases)."""
         # Record user message
         self.session.messages.append(Message(role=MessageRole.USER, content=user_message))
         self.session.updated_at = utcnow()
 
         # Build messages for LLM
-        messages = self._build_messages(user_message)
+        messages = self._build_messages(user_message, additional_context=additional_context)
 
         try:
             response = await self.provider.complete(messages, self._llm_config)

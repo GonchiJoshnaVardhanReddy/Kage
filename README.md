@@ -37,7 +37,7 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 | 🛡️ **Safe Mode** | Blocks dangerous commands (rm -rf, fork bombs, etc.) |
 | 🎯 **Scope Enforcement** | Prevents out-of-scope testing with DNS resolution and CIDR validation |
 | ⚡ **Tool Execution** | Run security tools with approval workflow |
-| 📁 **File Operations** | Read, write, edit, create files using `@` prefix (e.g., `@read file.txt`) |
+| 📁 **File Operations** | Natural-language file operations (read, write, edit, create) |
 | 📝 **Session Management** | Save, resume, import/export testing sessions |
 | 📊 **Report Generation** | Professional reports in Markdown, HTML, or PDF |
 | 🔌 **Plugin System** | Extend capabilities with `@capability` decorator and sandboxed execution |
@@ -51,7 +51,7 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 - [Quick Start](#-quick-start)
 - [Installation](#-installation)
 - [LLM Setup Guide](#-llm-setup-guide)
-  - [Option 1: Ollama (Recommended)](#option-1-ollama-recommended-free--local)
+  - [Option 1: Ollama](#option-1-ollama---free--local)
   - [Option 2: LM Studio](#option-2-lm-studio-free--local)
   - [Option 3: OpenAI API](#option-3-openai-api-paid--cloud)
   - [Option 4: Other APIs](#option-4-other-apis)
@@ -60,7 +60,7 @@ Kage (影 - "shadow" in Japanese) is a terminal-based AI assistant for **bug bou
 - [CLI Commands](#-cli-commands)
 - [Chat Commands](#-chat-commands)
 - [Configuration](#-configuration)
-- [Security Tools](#-recommended-security-tools)
+- [Security Tools](#-security-tools)
 - [License](#-license)
 
 ---
@@ -76,7 +76,7 @@ cd kage && pip install -e .
 
 # 2. Make sure Ollama is running (or LM Studio)
 ollama serve                    # In another terminal
-ollama pull llama3.1            # Download a model
+ollama pull <model-name>        # Download any compatible model
 
 # 3. Launch!
 kage launch
@@ -88,7 +88,7 @@ That's it! Kage will auto-detect Ollama, find your models, and start chatting.
 
 ## 🚀 Installation
 
-### One-Command Install (Recommended)
+### One-Command Install
 
 **Linux/macOS:**
 ```bash
@@ -212,7 +212,7 @@ Kage needs a Large Language Model (LLM) to work. You have several options:
 
 ---
 
-### Option 1: Ollama (Recommended) - FREE & Local
+### Option 1: Ollama - FREE & Local
 
 Ollama is the easiest way to run LLMs locally. Your data stays on your machine.
 
@@ -244,11 +244,8 @@ This starts the server at `http://localhost:11434`
 #### Step 3: Download a Model
 
 ```bash
-# Recommended models for security work:
-ollama pull llama3.1        # Good balance of speed and quality
-ollama pull llama3.1:70b    # Better quality (needs 48GB+ RAM)
-ollama pull codellama       # Specialized for code
-ollama pull mixtral         # Good for complex reasoning
+# Pull any model available in your Ollama library
+ollama pull <model-name>
 
 # List downloaded models
 ollama list
@@ -256,7 +253,7 @@ ollama list
 
 #### Step 4: Configure Kage
 
-**Quick Launch (Recommended):**
+**Quick Launch:**
 ```bash
 # Auto-detect and start immediately
 kage launch
@@ -280,7 +277,7 @@ kage setup
 ```yaml
 llm:
   provider: ollama
-  model: llama3.1
+  model: <model-name>
   base_url: http://localhost:11434
 ```
 
@@ -310,10 +307,7 @@ Available for Windows, macOS, and Linux.
 
 1. Open LM Studio
 2. Go to the **Search** tab (magnifying glass icon)
-3. Search for models like:
-   - `TheBloke/Llama-2-13B-chat-GGUF`
-   - `TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF`
-   - `TheBloke/CodeLlama-13B-Instruct-GGUF`
+3. Download any compatible instruction model for your hardware
 4. Click **Download**
 
 #### Step 3: Start the Local Server
@@ -331,14 +325,14 @@ Available for Windows, macOS, and Linux.
 │  Server Status: ● Running                           │
 │  URL: http://localhost:1234/v1                      │
 │                                                     │
-│  Model: TheBloke/Llama-2-13B-chat-GGUF             │
+│  Model: <your-loaded-model>                        │
 │                                                     │
 └─────────────────────────────────────────────────────┘
 ```
 
 #### Step 4: Configure Kage
 
-**Quick Launch (Recommended):**
+**Quick Launch:**
 ```bash
 kage launch lmstudio
 
@@ -379,7 +373,7 @@ kage chat
 
 ### Option 3: OpenAI API - Paid & Cloud
 
-Use OpenAI's GPT models (GPT-4, GPT-3.5-turbo).
+Use OpenAI-compatible chat/completions models.
 
 #### Step 1: Get API Key
 
@@ -401,7 +395,7 @@ Or edit config manually:
 ```yaml
 llm:
   provider: openai
-  model: gpt-4                    # or gpt-3.5-turbo (cheaper)
+  model: <model-name>
   base_url: https://api.openai.com/v1
   api_key: sk-your-api-key-here   # Keep this secret!
 ```
@@ -420,10 +414,7 @@ $env:OPENAI_API_KEY = "sk-your-api-key-here"
 
 #### Pricing Note
 
-OpenAI charges per token. Approximate costs:
-- GPT-3.5-turbo: ~$0.002 per 1K tokens
-- GPT-4: ~$0.03 per 1K tokens
-- GPT-4-turbo: ~$0.01 per 1K tokens
+OpenAI charges per token. Refer to the current provider pricing page for up-to-date rates.
 
 ---
 
@@ -436,7 +427,7 @@ Kage works with any OpenAI-compatible API:
 ```yaml
 llm:
   provider: anthropic
-  model: claude-3-sonnet
+  model: <model-name>
   base_url: https://api.anthropic.com/v1
   api_key: your-anthropic-key
 ```
@@ -446,7 +437,7 @@ llm:
 ```yaml
 llm:
   provider: groq
-  model: llama3-70b-8192
+  model: <model-name>
   base_url: https://api.groq.com/openai/v1
   api_key: your-groq-key
 ```
@@ -456,7 +447,7 @@ llm:
 ```yaml
 llm:
   provider: together
-  model: meta-llama/Llama-3-70b-chat-hf
+  model: <model-name>
   base_url: https://api.together.xyz/v1
   api_key: your-together-key
 ```
@@ -466,7 +457,7 @@ llm:
 ```yaml
 llm:
   provider: localai
-  model: gpt-3.5-turbo
+  model: <model-name>
   base_url: http://localhost:8080/v1
 ```
 
@@ -485,7 +476,7 @@ kage launch ollama
 kage launch lmstudio
 
 # Use specific model
-kage launch -m llama3.1
+kage launch -m <model-name>
 
 # Only configure (don't start chat)
 kage launch --config
@@ -518,7 +509,7 @@ kage chat
 kage chat --scope 10.10.10.0/24
 
 # With specific provider
-kage chat --provider ollama --model llama3.1
+kage chat --provider ollama --model <model-name>
 
 # Resume previous session
 kage session resume abc123
@@ -648,16 +639,14 @@ Hack mode generates:
 | `/export [path]` | Export session to file |
 | `/import <path>` | Import session from JSON file |
 
-### @ File Operations
+### File Operations (Natural Language)
 
 | Command | Description |
 |---------|-------------|
-| `@read <path>` | Read and display a file with syntax highlighting |
-| `@write <path> <text>` | Write text to a file |
-| `@edit <path>` | Interactive file editor (append, replace, delete, insert lines) |
-| `@create <path>` | Create a new file with interactive content input |
-| `@ls [path]` | List directory contents |
-| `@<path>` | Shorthand — reads the file directly |
+| Ask naturally | Example: "show `server.py`" |
+| Ask naturally | Example: "list files in `src`" |
+| Ask naturally | Example: "create `app.py`" |
+| Ask naturally | Example: "add logging to `server.py`" |
 
 ---
 
@@ -669,7 +658,7 @@ Configuration file: `~/.config/kage/config.yaml`
 # LLM Provider Settings
 llm:
   provider: ollama              # ollama, lmstudio, openai, or custom
-  model: llama3.1               # Model name
+  model: <model-name>           # Model name
   base_url: http://localhost:11434
   api_key: null                 # Required for OpenAI/cloud providers
   temperature: 0.7              # Creativity (0.0 - 1.0)
@@ -703,9 +692,9 @@ hack_mode:
 
 ---
 
-## 🔧 Recommended Security Tools
+## 🔧 Security Tools
 
-Kage works best with these tools installed:
+Kage supports these commonly used tools:
 
 | Category | Tools |
 |----------|-------|

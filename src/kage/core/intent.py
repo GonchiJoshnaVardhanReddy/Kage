@@ -60,6 +60,7 @@ _SECURITY_ACTIONS: set[str] = {
     "port scan", "service scan", "directory scan", "subdomain",
     "recon", "reconnaissance", "footprint", "osint",
     "post-exploitation", "lateral movement", "exfiltrate",
+    "ctf", "challenge", "capture the flag", "enumerate domain",
 }
 
 # Development keywords

@@ -69,7 +69,7 @@ class KaliExecutor(BaseExecutor):
         try:
             from kage.mcp.client import MCPClient
 
-            client = MCPClient(name=name, transport="sse", url=url)
+            client = MCPClient.from_sse(name=name, url=url)
             await client.connect()
             self._mcp_client = client
             self._active_server = name
@@ -122,7 +122,7 @@ class KaliExecutor(BaseExecutor):
                     continue
 
                 result = await self._mcp_client.call_tool(
-                    tool_name="run_command",
+                    name="run_command",
                     arguments={
                         "command": command,
                         "timeout": timeout,

@@ -23,7 +23,16 @@ class MCPManager:
         self.config = config
         self._clients: dict[str, MCPClient] = {}
         self._docker_containers: dict[str, str] = {}  # name -> container_id
-        self._tools_cache: dict[str, MCPTool] = {}
+        self._tools_cache: dict[str, list[MCPTool]] = {}
+
+    def _remove_server_tools(self, server_name: str) -> None:
+        """Remove cached tools associated with a server."""
+        new_cache: dict[str, list[MCPTool]] = {}
+        for tool_name, tools in self._tools_cache.items():
+            filtered = [tool for tool in tools if tool.server_name != server_name]
+            if filtered:
+                new_cache[tool_name] = filtered
+        self._tools_cache = new_cache
 
     async def start(self) -> None:
         """Start all configured MCP servers."""
@@ -53,6 +62,8 @@ class MCPManager:
                 await client.disconnect()
             except Exception as e:
                 logger.error(f"Error disconnecting {name}: {e}")
+            finally:
+                self._remove_server_tools(name)
 
         self._clients.clear()
 
@@ -166,7 +177,8 @@ class MCPManager:
 
         # Cache tools
         for tool in client.get_tools():
-            self._tools_cache[tool.name] = tool
+            existing = self._tools_cache.setdefault(tool.name, [])
+            existing.append(tool)
 
         logger.info(f"Connected to MCP server: {config.name} ({len(client.get_tools())} tools)")
 
@@ -216,20 +228,25 @@ class MCPManager:
 
     def get_all_tools(self) -> list[MCPTool]:
         """Get all available tools from all connected servers."""
-        return list(self._tools_cache.values())
+        return [tools[0] for tools in self._tools_cache.values() if tools]
 
     def get_tool(self, name: str) -> MCPTool | None:
         """Get a specific tool by name."""
-        return self._tools_cache.get(name)
+        candidates = self._tools_cache.get(name, [])
+        return candidates[0] if candidates else None
 
     def get_tools_for_llm(self) -> list[dict[str, Any]]:
         """Get tools in OpenAI function calling format."""
-        return [tool.to_openai_format() for tool in self._tools_cache.values()]
+        return [tool.to_openai_format() for tool in self.get_all_tools()]
+
+    def has_tool(self, name: str) -> bool:
+        """Check whether any connected server provides a tool."""
+        return bool(self._tools_cache.get(name))
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> MCPToolResult:
         """Call a tool on the appropriate MCP server."""
-        tool = self._tools_cache.get(name)
-        if not tool:
+        tools = self._tools_cache.get(name, [])
+        if not tools:
             return MCPToolResult(
                 tool_name=name,
                 success=False,
@@ -237,17 +254,39 @@ class MCPManager:
                 is_error=True,
             )
 
-        # Find the client that has this tool
-        client = self._clients.get(tool.server_name or "")
-        if not client:
-            return MCPToolResult(
-                tool_name=name,
-                success=False,
-                error=f"Server not connected for tool: {name}",
-                is_error=True,
-            )
+        errors: list[str] = []
 
-        return await client.call_tool(name, arguments)
+        # Try each server exposing this tool until one succeeds.
+        for tool in tools:
+            server_name = tool.server_name or ""
+            client = self._clients.get(server_name)
+            if not client:
+                errors.append(f"{server_name}: server not connected")
+                continue
+
+            result = await client.call_tool(name, arguments)
+            if result.success and not result.is_error:
+                return result
+
+            errors.append(f"{server_name}: {result.error or 'tool call failed'}")
+
+            # Best-effort reconnect and retry once on the same server.
+            if await self.reconnect(server_name):
+                retry_client = self._clients.get(server_name)
+                if retry_client:
+                    retry_result = await retry_client.call_tool(name, arguments)
+                    if retry_result.success and not retry_result.is_error:
+                        return retry_result
+                    errors.append(
+                        f"{server_name} (retry): {retry_result.error or 'tool call failed'}"
+                    )
+
+        return MCPToolResult(
+            tool_name=name,
+            success=False,
+            error="; ".join(errors) if errors else f"Failed to call tool: {name}",
+            is_error=True,
+        )
 
     def get_connected_servers(self) -> list[str]:
         """Get list of connected server names."""
@@ -275,6 +314,7 @@ class MCPManager:
             with contextlib.suppress(Exception):
                 await self._clients[server_name].disconnect()
             del self._clients[server_name]
+            self._remove_server_tools(server_name)
 
         # Reconnect
         try:

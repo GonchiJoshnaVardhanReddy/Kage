@@ -1,6 +1,7 @@
 """Tests for intent detection engine."""
 
 import pytest
+from pydantic import ValidationError
 
 from kage.core.intent import (
     Intent,
@@ -131,6 +132,10 @@ class TestIntentClassification:
         result = classify_intent("scan 192.168.1.0/24 for open ports")
         assert result.intent == Intent.SECURITY
 
+    def test_ctf_challenge_security_intent(self):
+        result = classify_intent("help me with this ctf challenge")
+        assert result.intent == Intent.SECURITY
+
 
 class TestIntentResult:
     """Test IntentResult model."""
@@ -146,8 +151,8 @@ class TestIntentResult:
         assert result.confidence == 0.95
 
     def test_confidence_bounds(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             IntentResult(intent=Intent.CHAT, confidence=1.5)
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             IntentResult(intent=Intent.CHAT, confidence=-0.1)
