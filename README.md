@@ -167,7 +167,7 @@ kage --help
 
 | Platform | Python | Status |
 |----------|--------|--------|
-| **Kali Linux** | 3.10–3.14 | ✅ Tested (use venv) |
+| **Kali Linux** | 3.10–3.14 | ✅ Tested (use venv) python3 -m venv venv, source venv/bin/activate |
 | **Ubuntu/Debian** | 3.10–3.14 | ✅ Tested |
 | **Parrot OS** | 3.10–3.14 | ✅ Tested |
 | **Arch Linux** | 3.10–3.14 | ✅ Compatible |
