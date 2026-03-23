@@ -12,6 +12,13 @@ from kage.core.agents.context import AgentContext, AgentExecutionRecord
 from kage.core.agents.memory import WorkflowMemory
 from kage.core.agents.orchestrator import AgentOrchestrator
 from kage.core.agents.pipeline import AgentPipeline, OrchestrationResult
+from kage.core.agents.scheduler import (
+    DependencyGraph,
+    MergedAgentResult,
+    ParallelAgentGroup,
+    ParallelAgentScheduler,
+    aggregate_results,
+)
 
 __all__ = [
     "AgentContext",
@@ -23,8 +30,13 @@ __all__ = [
     "BaseAgent",
     "OrchestrationResult",
     "PlannerAgent",
+    "ParallelAgentGroup",
+    "ParallelAgentScheduler",
     "ReporterAgent",
     "ShellExecutorAgent",
+    "DependencyGraph",
+    "MergedAgentResult",
+    "aggregate_results",
     "WorkflowMemory",
 ]
 

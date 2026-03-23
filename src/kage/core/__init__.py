@@ -1,7 +1,20 @@
 """Core module for Kage."""
 
+from kage.core.agents.scheduler import DependencyGraph, ParallelAgentGroup, ParallelAgentScheduler
 from kage.core.hooks import HookDispatchResult, HookEvent, HookManager, HookRegistration
 from kage.core.intent import Intent, IntentResult, classify_intent, needs_ai_classification
+from kage.core.memory import (
+    CompactionConfig,
+    LLMMemorySummarizer,
+    MemoryBlock,
+    MemoryCompactor,
+    MemoryRetriever,
+    MemoryStore,
+    MemorySummarizer,
+    MemoryTimestampRange,
+    RuleBasedMemorySummarizer,
+    TranscriptSegment,
+)
 from kage.core.models import (
     AuditEntry,
     Command,
@@ -50,6 +63,15 @@ from kage.core.tools import (
     ToolValidationResult,
     ToolValidationStrategy,
 )
+from kage.core.workflows import (
+    WorkflowExecutor,
+    WorkflowLoader,
+    WorkflowRegistry,
+    WorkflowTemplate,
+    WorkflowTemplateSchema,
+    ensure_builtin_workflow_templates,
+    register_plugin_workflows,
+)
 
 __all__ = [
     "AuditEntry",
@@ -66,10 +88,19 @@ __all__ = [
     "HookRegistration",
     "Intent",
     "IntentResult",
+    "LLMMemorySummarizer",
+    "MemoryBlock",
+    "MemoryCompactor",
+    "MemoryRetriever",
+    "MemoryStore",
+    "MemorySummarizer",
+    "MemoryTimestampRange",
     "Message",
     "MessageRole",
     "PlanStatus",
     "PlanStep",
+    "ParallelAgentGroup",
+    "ParallelAgentScheduler",
     "PluginCapability",
     "PluginMetadata",
     "PolicyAction",
@@ -84,6 +115,7 @@ __all__ = [
     "Session",
     "Severity",
     "Target",
+    "DependencyGraph",
     "TraceEvent",
     "TraceRecorder",
     "TraceSeverity",
@@ -100,6 +132,16 @@ __all__ = [
     "ToolValidationError",
     "ToolValidationResult",
     "ToolValidationStrategy",
+    "WorkflowExecutor",
+    "WorkflowLoader",
+    "WorkflowRegistry",
+    "WorkflowTemplate",
+    "WorkflowTemplateSchema",
+    "ensure_builtin_workflow_templates",
+    "register_plugin_workflows",
+    "TranscriptSegment",
+    "CompactionConfig",
+    "RuleBasedMemorySummarizer",
     "classify_intent",
     "export_json",
     "export_jsonl",

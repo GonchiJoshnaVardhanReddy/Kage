@@ -41,6 +41,8 @@ from kage.core.tools import (
 from kage.persistence import SessionStorage
 from kage.security.output_parser import parse_tool_output
 from kage.security.tool_checker import check_tool_installed, get_install_suggestion
+from kage.ui import SlashCommand, SlashCommandPalette, UIMode, create_renderer
+from kage.ui.status import build_status_state
 from kage.utils import utcnow
 
 if TYPE_CHECKING:
@@ -56,6 +58,7 @@ class ChatSession:
         config: KageConfig,
         session_id: str | None = None,
         scope: str | None = None,
+        ui_mode: UIMode = UIMode.RICH,
     ) -> None:
         self.console = console
         self.config = config
@@ -69,6 +72,10 @@ class ChatSession:
         self._auto_save: Any | None = None
         self._resumed = False
         self._turn_counter = 0
+        self._ui_mode = ui_mode
+        self._renderer = create_renderer(mode=ui_mode, console=console)
+        self._renderer.set_dino_enabled(config.ui.dino_enabled)
+        self._palette = SlashCommandPalette()
 
         # Approval preferences (per-session memory)
         self._approved_all: bool = False
@@ -89,6 +96,8 @@ class ChatSession:
         self._mcp_servers_loaded: list[str] = []
         configure_runtime_context_provider(self._mcp_execution_context)
         self._load_mcp_tools()
+        for command, description in self.COMMANDS.items():
+            self._palette.register(SlashCommand(command=f"/{command}", description=description))
 
         # Command router
         self._router = CommandRouter()
@@ -228,7 +237,9 @@ class ChatSession:
 
     def _log_action(self, action: str, target: str) -> None:
         """Emit a concise step log line."""
-        self.console.print(f"[info]● {action} {target}[/info]")
+        from kage.cli.ui.panels import create_action_box
+
+        self.console.print(create_action_box(action, target))
 
     def _summarize_command_result(self, cmd: Command) -> str:
         """Create a concise, user-facing command execution summary."""
@@ -421,6 +432,14 @@ class ChatSession:
         "saves": "List all saved sessions",
         "export": "Export session to file",
         "import": "Import a session from file",
+        "run": "Run runtime actions (e.g. /run workflow <name>)",
+        "tools": "Tool diagnostics (e.g. /tools list)",
+        "workflows": "Workflow diagnostics (e.g. /workflows list)",
+        "memory": "Memory diagnostics (e.g. /memory inspect)",
+        "trace": "Trace diagnostics/export (e.g. /trace last)",
+        "prompt": "Prompt diagnostics (e.g. /prompt inspect)",
+        "plugins": "Plugin diagnostics (e.g. /plugins list)",
+        "ui": "UI toggles (e.g. /ui dino on)",
     }
 
     def _setup_completer(self) -> None:
@@ -449,12 +468,8 @@ class ChatSession:
 
     def _suggest_commands(self, partial: str) -> list[tuple[str, str]]:
         """Get command suggestions based on partial input."""
-        partial = partial.lower()
-        matches = []
-        for cmd, desc in self.COMMANDS.items():
-            if cmd.startswith(partial):
-                matches.append((cmd, desc))
-        return matches
+        matches = self._palette.search(partial)
+        return [(item.command, item.description) for item in matches]
 
     def _show_suggestions(self, partial: str) -> None:
         """Display command suggestions."""
@@ -464,11 +479,8 @@ class ChatSession:
             self.console.print("[muted]Type /help for available commands.[/muted]")
             return
 
-        self.console.print()
-        self.console.print("[header]Did you mean:[/header]")
-        for cmd, desc in matches:
-            self.console.print(f"  [command]/{cmd}[/command] - [muted]{desc}[/muted]")
-        self.console.print()
+        normalized = f"/{partial}" if partial and not partial.startswith("/") else partial
+        self._renderer.render_palette(normalized, matches)
 
     def _handle_slash_command(self, command: str) -> bool:
         """Handle slash commands. Returns True if should continue loop."""
@@ -501,6 +513,14 @@ class ChatSession:
             "model",
             "hacker",
             "hack",
+            "run",
+            "tools",
+            "workflows",
+            "memory",
+            "trace",
+            "prompt",
+            "plugins",
+            "ui",
         ]
 
         if cmd not in exact_commands:
@@ -576,6 +596,30 @@ class ChatSession:
 
         elif cmd == "model":
             self._change_model()
+
+        elif cmd == "run":
+            self._handle_run_command(args)
+
+        elif cmd == "tools":
+            self._handle_tools_command(args)
+
+        elif cmd == "workflows":
+            self._handle_workflows_command(args)
+
+        elif cmd == "memory":
+            self._handle_memory_command(args)
+
+        elif cmd == "trace":
+            self._handle_trace_command(args)
+
+        elif cmd == "prompt":
+            self._handle_prompt_command(args)
+
+        elif cmd == "plugins":
+            self._handle_plugins_command(args)
+
+        elif cmd == "ui":
+            self._handle_ui_command(args)
 
         elif cmd in ("hacker", "hack"):
             self._enter_hacker_mode()
@@ -706,11 +750,25 @@ Use plain language for file operations:
 
         return None
 
-    async def _ai_edit_file(self, path_str: str, request: str) -> bool:
-        """Perform an AI-driven file edit with diff preview and approval."""
+    @staticmethod
+    def _build_unified_diff(*, before: str, after: str, file_name: str) -> str:
+        """Build a unified diff preview between two text snapshots."""
         import difflib
 
-        from kage.cli.ui.prompts import prompt_file_approval
+        diff_lines = list(
+            difflib.unified_diff(
+                before.splitlines(),
+                after.splitlines(),
+                fromfile=f"a/{file_name}",
+                tofile=f"b/{file_name}",
+                lineterm="",
+            )
+        )
+        return "\n".join(diff_lines) if diff_lines else "(No changes)"
+
+    async def _ai_edit_file(self, path_str: str, request: str) -> bool:
+        """Perform an AI-driven file edit with diff preview and approval."""
+        from kage.ui.diff import prompt_diff_approval
 
         file_path = self._resolve_workspace_path(path_str)
         if file_path is None:
@@ -766,18 +824,18 @@ Use plain language for file operations:
             self.console.print("[muted]No changes proposed.[/muted]")
             return True
 
-        diff_lines = list(
-            difflib.unified_diff(
-                original_content.splitlines(),
-                updated_content.splitlines(),
-                fromfile=f"a/{file_path.name}",
-                tofile=f"b/{file_path.name}",
-                lineterm="",
-            )
+        diff_preview = self._build_unified_diff(
+            before=original_content,
+            after=updated_content,
+            file_name=file_path.name,
         )
-        diff_preview = "\n".join(diff_lines) if diff_lines else "(No changes)"
 
-        if not prompt_file_approval(self.console, "edit", str(file_path), diff_preview):
+        if prompt_diff_approval(
+            self.console,
+            file_path=str(file_path),
+            unified_diff=diff_preview,
+            allow_edit_option=True,
+        ) != "y":
             self.console.print("[muted]Edit cancelled.[/muted]")
             return True
 
@@ -846,6 +904,16 @@ Use plain language for file operations:
             if create_path:
                 self._create_file(create_path)
                 return True
+
+        if lower.startswith(("write ", "overwrite ")):
+            write_path: str | None = self._extract_file_path_from_text(user_input)
+            if write_path:
+                resolved = self._resolve_workspace_path(write_path)
+                if resolved and resolved.exists() and resolved.is_file():
+                    parts = user_input.split(maxsplit=2)
+                    if len(parts) >= 3:
+                        self._write_file(write_path, parts[2])
+                        return True
 
         edit_keywords = ("add ", "update ", "modify ", "change ", "refactor ", "fix ", "remove ")
         if lower.startswith(edit_keywords):
@@ -961,6 +1029,7 @@ Use plain language for file operations:
 
     def _show_suggested_commands(self) -> None:
         """Show AI-suggested commands queued for approval."""
+        from kage.cli.ui.panels import create_suggested_commands_panel
         shell_commands = self._pending_commands
         non_shell_tools = [
             plan for plan in self._pending_tool_plans if plan.tool_name != "builtin.shell.run"
@@ -969,16 +1038,14 @@ Use plain language for file operations:
             self.console.print("[muted]No suggested commands.[/muted]")
             return
 
-        self.console.print("[header]Suggested Commands[/header]")
-        for i, cmd in enumerate(shell_commands, 1):
-            self.console.print(f"  [{i}] [command]{cmd.command}[/command]")
-            if cmd.description:
-                self.console.print(f"      [muted]{cmd.description}[/muted]")
-        offset = len(shell_commands)
-        for i, plan in enumerate(non_shell_tools, 1):
-            self.console.print(f"  [{offset + i}] [command]{plan.tool_name}[/command]")
-            if plan.arguments:
-                self.console.print(f"      [muted]{plan.arguments}[/muted]")
+        tools = [(plan.tool_name, plan.arguments if isinstance(plan.arguments, dict) else None) for plan in non_shell_tools]
+        self.console.print(create_suggested_commands_panel(shell_commands, tools))
+        for plan in self._pending_tool_plans:
+            self._renderer.render_tool_preview(
+                plan=plan,
+                policy_decision="ask" if plan.approval_required else "allow",
+                confidence_score=plan.confidence_score,
+            )
 
     def _save_session(self, name: str | None = None) -> None:
         """Save the current session with optional name."""
@@ -1250,18 +1317,21 @@ Use plain language for file operations:
         """Write content to a file with approval."""
         from kage.cli.ui.prompts import (
             FileCreateApprovalChoice,
-            prompt_file_approval,
             prompt_file_create_approval,
         )
+        from kage.ui.diff import prompt_diff_approval
 
         file_path = self._resolve_workspace_path(path_str)
         if file_path is None:
             return
         action = "overwrite" if file_path.exists() else "create"
+        normalized_content = content.replace("\\n", "\n").replace("\\t", "\t")
 
         if action == "create":
             if not self._auto_approve_file_create:
-                create_choice = prompt_file_create_approval(self.console, str(file_path), content)
+                create_choice = prompt_file_create_approval(
+                    self.console, str(file_path), normalized_content
+                )
                 if create_choice == FileCreateApprovalChoice.CANCEL:
                     self.console.print("[muted]Write cancelled.[/muted]")
                     return
@@ -1270,15 +1340,32 @@ Use plain language for file operations:
                     self.console.print(
                         "[info]Auto-approving file creation for this session.[/info]"
                     )
-        elif not prompt_file_approval(self.console, action, str(file_path), content):
-            self.console.print("[muted]Write cancelled.[/muted]")
-            return
+        else:
+            existing_content = file_path.read_text(encoding="utf-8", errors="replace")
+            diff_preview = self._build_unified_diff(
+                before=existing_content,
+                after=normalized_content,
+                file_name=file_path.name,
+            )
+            approval = prompt_diff_approval(
+                self.console,
+                file_path=str(file_path),
+                unified_diff=diff_preview,
+                allow_edit_option=True,
+            )
+            if approval == "edit":
+                self.console.print("[muted]Switching to interactive editor...[/muted]")
+                self._edit_file(str(file_path))
+                return
+            if approval != "y":
+                self.console.print("[muted]Write cancelled.[/muted]")
+                return
 
         try:
             verb = "Creating file" if action == "create" else "Writing file"
             self._log_action(verb, str(file_path.relative_to(self.workspace_root)))
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            content = content.replace("\\n", "\n").replace("\\t", "\t")
+            content = normalized_content
             pre_write = asyncio.run(
                 self._hooks.dispatch(
                     HookEvent.PRE_FILE_WRITE,
@@ -1324,7 +1411,7 @@ Use plain language for file operations:
 
     def _edit_file(self, path_str: str) -> None:
         """Open a file for interactive editing (append/replace line)."""
-        from kage.cli.ui.prompts import prompt_file_approval
+        from kage.ui.diff import prompt_diff_approval
 
         file_path = self._resolve_workspace_path(path_str)
         if file_path is None:
@@ -1363,26 +1450,20 @@ Use plain language for file operations:
 
                 if action.lower() == "q":
                     if modified:
-                        import difflib
-
                         updated_content = "\n".join(lines) + "\n"
-                        diff_lines = list(
-                            difflib.unified_diff(
-                                original_content.splitlines(),
-                                updated_content.splitlines(),
-                                fromfile=f"a/{file_path.name}",
-                                tofile=f"b/{file_path.name}",
-                                lineterm="",
-                            )
+                        diff_preview = self._build_unified_diff(
+                            before=original_content,
+                            after=updated_content,
+                            file_name=file_path.name,
                         )
-                        diff_preview = "\n".join(diff_lines) if diff_lines else "(No changes)"
 
-                        if not prompt_file_approval(
+                        approval = prompt_diff_approval(
                             self.console,
-                            "edit",
-                            str(file_path),
-                            diff_preview,
-                        ):
+                            file_path=str(file_path),
+                            unified_diff=diff_preview,
+                            allow_edit_option=False,
+                        )
+                        if approval != "y":
                             self.console.print("[muted]Edit cancelled. Changes not saved.[/muted]")
                             break
 
@@ -1830,6 +1911,7 @@ Use plain language for file operations:
 
         from rich.prompt import Confirm
 
+        from kage.cli.ui.panels import create_danger_confirmation_box
         from kage.cli.ui.prompts import (
             ApprovalChoice,
             prompt_command_approval,
@@ -1857,6 +1939,7 @@ Use plain language for file operations:
                 for s in plan.steps
             ]
 
+            self._log_action("Plan tracker", f"{len(steps)} step(s)")
             choice = prompt_plan_approval(self.console, steps)
 
             if choice == "cancel":
@@ -1946,13 +2029,8 @@ Use plain language for file operations:
 
             # Handle blocked commands
             if result.decision == ApprovalDecision.BLOCKED:
-                self.console.print(
-                    Panel(
-                        f"[danger]{result.reason}[/danger]",
-                        title="[unsafe]🛡 BLOCKED BY SAFE MODE[/unsafe]",
-                        border_style="danger",
-                    )
-                )
+                reason = result.reason or "Blocked by policy."
+                self.console.print(create_danger_confirmation_box(reason, command=cmd.command))
                 cmd.status = CommandStatus.REJECTED
                 self.session.commands.append(cmd)
                 if cmd in self._pending_commands:
@@ -1970,11 +2048,9 @@ Use plain language for file operations:
                 and result.safe_mode_result.danger_level == DangerLevel.DANGEROUS
             ):
                 self.console.print(
-                    Panel(
-                        "[danger]WARNING: This command may impact system stability or targets.[/danger]\n"
-                        f"[command]{cmd.command}[/command]",
-                        title="[unsafe]⚠ Dangerous Command[/unsafe]",
-                        border_style="danger",
+                    create_danger_confirmation_box(
+                        "This command may impact system stability or targets.",
+                        command=cmd.command,
                     )
                 )
                 if not Confirm.ask("[danger]Continue?[/danger]", default=False):
@@ -2175,6 +2251,231 @@ Use plain language for file operations:
         self._pending_tool_plans.clear()
 
 
+    def _print_turn_status_line(self) -> None:
+        """Print a compact turn status line to keep UX context visible."""
+        from kage.cli.ui.panels import create_status_line
+
+        pending_actions = len(self._pending_commands) + len(self._pending_tool_plans)
+        self.console.print(
+            create_status_line(
+                turn_id=self._turn_counter + 1,
+                safe_mode=self.session.safe_mode,
+                pending_actions=pending_actions,
+            )
+        )
+
+    def _render_status_bar(self) -> None:
+        """Render persistent footer status panel."""
+        state = build_status_state(
+            provider=self.config.llm.provider,
+            model=self.config.llm.model,
+            session_id=self.session.id,
+            session_metadata=self.session.metadata,
+            safe_mode=self.session.safe_mode,
+            active_workflow=str(self.session.metadata.get("workflow_name", "-")),
+        )
+        self._renderer.render_status_bar(state)
+
+    def _drain_trace_events(self) -> None:
+        """Render new trace events through the UI renderer."""
+        self._renderer.consume_trace_events(self.session.trace, turn_id=self._turn_counter)
+
+    def _handle_run_command(self, args: str) -> None:
+        """Handle /run command variants."""
+        parts = args.split()
+        if len(parts) >= 2 and parts[0].lower() == "workflow":
+            workflow_name = " ".join(parts[1:]).strip()
+            if not workflow_name:
+                self.console.print("[muted]Usage: /run workflow <name>[/muted]")
+                return
+            self.console.print(
+                f"[info]Workflow command registered (preview): {workflow_name}[/info]"
+            )
+            self.session.metadata["workflow_name"] = workflow_name
+            self._render_status_bar()
+            return
+        self.console.print("[muted]Usage: /run workflow <name>[/muted]")
+
+    def _handle_tools_command(self, args: str) -> None:
+        """Handle /tools command variants."""
+        if args.strip().lower() == "list":
+            tools = self._tool_registry.list()
+            self.console.print("[header]Tools[/header]")
+            for tool in tools:
+                self.console.print(f"  [command]{tool.name}[/command] [muted]- {tool.description}[/muted]")
+            return
+        self.console.print("[muted]Usage: /tools list[/muted]")
+
+    def _handle_workflows_command(self, args: str) -> None:
+        """Handle /workflows command variants."""
+        if args.strip().lower() == "list":
+            self.console.print("[header]Workflows[/header]")
+            workflow_name = str(self.session.metadata.get("workflow_name") or "-")
+            self.console.print(f"  [command]{workflow_name}[/command]")
+            self._renderer.render_workflow_progress()
+            return
+        self.console.print("[muted]Usage: /workflows list[/muted]")
+
+    def _handle_memory_command(self, args: str) -> None:
+        """Handle /memory command variants."""
+        if args.strip().lower() == "inspect":
+            blocks = self.session.metadata.get("memory_blocks", [])
+            if isinstance(blocks, list) and blocks:
+                self.console.print(f"[info]Memory blocks: {len(blocks)}[/info]")
+                for block in blocks[-10:]:
+                    summary = str(block.get("summary", "")) if isinstance(block, dict) else str(block)
+                    self.console.print(f"  [muted]- {summary[:120]}[/muted]")
+            else:
+                self.console.print("[muted]No memory blocks available.[/muted]")
+            return
+        self.console.print("[muted]Usage: /memory inspect[/muted]")
+
+    def _handle_trace_command(self, args: str) -> None:
+        """Handle /trace command variants."""
+        option = args.strip().lower()
+        if option == "last":
+            self._renderer.render_trace_debug(self.session.trace.get_turn(self._turn_counter))
+            return
+        if option == "debug":
+            enabled = self._renderer.toggle_debug()
+            state = "enabled" if enabled else "disabled"
+            self.console.print(f"[info]Trace debug mode {state}.[/info]")
+            return
+        if option == "export":
+            from kage.core.observability import export_jsonl
+
+            exported = export_jsonl(self.session.trace)
+            self.console.print(exported[:3000], highlight=False)
+            return
+        self.console.print("[muted]Usage: /trace last | /trace debug | /trace export[/muted]")
+
+    def _build_prompt_diagnostics_snapshot(self) -> Any:
+        """Build middleware-aware prompt diagnostics with canonical layer ordering."""
+        from kage.core.agents import WorkflowMemory
+        from kage.core.prompt import PromptCompiler, PromptContext
+        from kage.core.prompt.context import CompiledPrompt, PromptLayerOutput
+
+        workflow_memory = WorkflowMemory()
+        for finding in self.session.findings[-8:]:
+            workflow_memory.add_finding(
+                {"title": finding.title, "severity": finding.severity.value}
+            )
+
+        security_memory = self.session.metadata.get("security_memory", {})
+        if isinstance(security_memory, dict):
+            targets = security_memory.get("targets", [])
+            if isinstance(targets, list):
+                for target in targets[-8:]:
+                    if isinstance(target, str):
+                        workflow_memory.add_target(target)
+
+            recon_results = security_memory.get("recon_results", [])
+            if isinstance(recon_results, list):
+                for result in recon_results[-8:]:
+                    if isinstance(result, dict):
+                        command = str(result.get("command", "")).strip()
+                        status = str(result.get("status", "")).strip()
+                        if command:
+                            workflow_memory.add_note(
+                                f"{command} ({status or 'unknown'})"
+                            )
+
+        transcript_excerpts: list[str] = []
+        for message in self.session.messages[-8:]:
+            text = str(getattr(message, "content", "")).strip()
+            if text:
+                transcript_excerpts.append(text[:300])
+
+        plugin_injections: list[str] = []
+        middleware_ctx = self._middleware_context()
+        mcp_info = middleware_ctx.get("mcp", {})
+        if isinstance(mcp_info, dict):
+            servers = mcp_info.get("servers", [])
+            if isinstance(servers, list) and servers:
+                plugin_injections.append(
+                    "MCP servers loaded: " + ", ".join(str(item) for item in servers[:8])
+                )
+
+        workflow_name = str(self.session.metadata.get("workflow_name", "")).strip()
+        runtime_context = f"active_workflow={workflow_name}" if workflow_name else ""
+
+        compiler = PromptCompiler()
+        context = PromptContext(
+            session=self.session,
+            registry=self._tool_registry,
+            workflow_memory=workflow_memory,
+            plugin_injections=plugin_injections,
+            transcript_excerpts=transcript_excerpts,
+            metadata={"turn_id": self._turn_counter, "runtime_context": runtime_context},
+        )
+        compiled = compiler.compile(context)
+
+        layer_name_map = [
+            ("system", "SystemLayer"),
+            ("policy", "PolicyLayer"),
+            ("command", "CommandLayer"),
+            ("session_memory", "SessionMemoryLayer"),
+            ("plugin", "PluginLayer"),
+            ("runtime_context", "RuntimeContextLayer"),
+        ]
+        by_name = {layer.name: layer for layer in compiled.layers}
+        diagnostic_layers: list[PromptLayerOutput] = []
+        dropped_layers: list[str] = []
+        for index, (internal_name, display_name) in enumerate(layer_name_map, start=1):
+            match = by_name.get(internal_name)
+            if match:
+                diagnostic_layers.append(
+                    PromptLayerOutput(
+                        name=display_name,
+                        priority=index * 10,
+                        content=match.content,
+                    )
+                )
+            else:
+                diagnostic_layers.append(
+                    PromptLayerOutput(name=display_name, priority=index * 10, content="")
+                )
+                dropped_layers.append(display_name)
+
+        token_count = sum(max(1, len(layer.content) // 4) for layer in diagnostic_layers if layer.content)
+        return CompiledPrompt(
+            system_prompt=compiled.system_prompt,
+            layers=diagnostic_layers,
+            dropped_layers=dropped_layers,
+            token_count_estimate=max(1, token_count),
+        )
+
+    def _handle_prompt_command(self, args: str) -> None:
+        """Handle /prompt command variants."""
+        if args.strip().lower() == "inspect":
+            compiled = self._build_prompt_diagnostics_snapshot()
+            self._renderer.render_prompt_diagnostics(compiled)
+            return
+        self.console.print("[muted]Usage: /prompt inspect[/muted]")
+
+    def _handle_plugins_command(self, args: str) -> None:
+        """Handle /plugins command variants."""
+        if args.strip().lower() == "list":
+            self.console.print("[header]Plugins[/header]")
+            self.console.print("  [muted]Plugin manager is runtime-internal in chat mode.[/muted]")
+            return
+        self.console.print("[muted]Usage: /plugins list[/muted]")
+
+    def _handle_ui_command(self, args: str) -> None:
+        """Handle /ui command variants."""
+        tokens = args.strip().lower().split()
+        if len(tokens) == 2 and tokens[0] == "dino" and tokens[1] in {"on", "off"}:
+            enabled = tokens[1] == "on"
+            self._renderer.set_dino_enabled(enabled)
+            self.config.ui.dino_enabled = enabled
+            self.config.save()
+            state = "enabled" if enabled else "disabled"
+            self.console.print(f"[info]Dinosaur panel {state}.[/info]")
+            self._render_status_bar()
+            return
+        self.console.print("[muted]Usage: /ui dino on | /ui dino off[/muted]")
+
+
     async def _execute_command(self, cmd: Command, route: RouteResult | None = None) -> None:
         """Execute a single command locally."""
         from kage.executor import LocalExecutor
@@ -2364,7 +2665,7 @@ Use plain language for file operations:
             additional_context = pre_llm_hook.payload.get("additional_context")
             response_text, commands, plans = await self.conversation.send_message(
                 effective_input,
-                on_chunk=lambda c: self.console.print(c, end="", highlight=False),
+                on_chunk=lambda c: self._renderer.render_stream_token(c),
                 additional_context=additional_context if isinstance(additional_context, str) else None,
             )
             post_llm_hook = await self._hooks.dispatch(
@@ -2397,7 +2698,7 @@ Use plain language for file operations:
             if response_text and response_text.startswith(("Error ", "No response")):
                 self.console.print(response_text, highlight=False)
 
-            self.console.print()  # Newline after streaming
+            self._renderer.complete_stream()
 
             if plans:
                 self._pending_tool_plans.extend(plans)
@@ -2411,10 +2712,13 @@ Use plain language for file operations:
 
                 if Confirm.ask("[info]Execute suggested action(s) now?[/info]", default=True):
                     self._run_pending_tool_plans()
+                    self._drain_trace_events()
                 else:
                     self._pending_commands.clear()
                     self._pending_tool_plans.clear()
                     self.console.print("[muted]Skipped suggested command(s).[/muted]")
+            else:
+                self._drain_trace_events()
 
             post_turn = await self._hooks.dispatch(
                 HookEvent.POST_TURN_PERSIST,
@@ -2434,6 +2738,8 @@ Use plain language for file operations:
                 )
             if post_turn.payload.get("force_save") is True:
                 self._save_session()
+            self._drain_trace_events()
+            self._render_status_bar()
 
         except Exception as e:
             self.console.print()
@@ -2479,9 +2785,11 @@ Use plain language for file operations:
             provider=self.config.llm.provider,
             model=self.config.llm.model,
         )
+        self._render_status_bar()
 
         while self.running:
             try:
+                self._print_turn_status_line()
                 # Get user input with styled prompt box
                 self.console.print()
                 self.console.print(
@@ -2532,6 +2840,8 @@ Use plain language for file operations:
 
                 # Process regular message
                 asyncio.run(self._process_message(user_input))
+                self._drain_trace_events()
+                self._render_status_bar()
 
             except KeyboardInterrupt:
                 self.console.print()
@@ -2569,7 +2879,8 @@ def chat_loop(
     config: KageConfig,
     session_id: str | None = None,
     scope: str | None = None,
+    ui_mode: UIMode = UIMode.RICH,
 ) -> None:
     """Start the interactive chat loop."""
-    session = ChatSession(console, config, session_id, scope)
+    session = ChatSession(console, config, session_id, scope, ui_mode=ui_mode)
     session.run()

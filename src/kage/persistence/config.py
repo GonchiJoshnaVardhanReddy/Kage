@@ -93,6 +93,7 @@ class UIConfig(BaseModel):
     show_command_output: bool = True
     max_output_lines: int = 100
     markdown_code_theme: str = "monokai"
+    dino_enabled: bool = True
 
 
 class SlashSuggestionBoostsConfig(BaseModel):

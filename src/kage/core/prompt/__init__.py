@@ -18,7 +18,11 @@ from kage.core.prompt.layers import (
     SessionMemoryLayer,
     SystemLayer,
 )
-from kage.core.prompt.middleware import PromptMiddleware, PromptMiddlewareManager
+from kage.core.prompt.middleware_registry import (
+    MiddlewareRegistry,
+    PromptMiddleware,
+    ReconContextMiddleware,
+)
 
 __all__ = [
     "BasePromptLayer",
@@ -31,7 +35,8 @@ __all__ = [
     "PromptLayer",
     "PromptLayerOutput",
     "PromptMiddleware",
-    "PromptMiddlewareManager",
+    "MiddlewareRegistry",
+    "ReconContextMiddleware",
     "RuntimeContextLayer",
     "SessionMemoryLayer",
     "SystemLayer",

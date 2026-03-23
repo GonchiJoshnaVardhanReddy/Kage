@@ -1,7 +1,12 @@
 """Rich UI panels for Kage."""
 
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
 from rich.console import Group, RenderableType
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -16,7 +21,7 @@ def create_status_panel(
     model: str,
 ) -> Panel:
     """Create the status panel shown at the top of the chat."""
-    table = Table.grid(padding=(0, 2))
+    table = Table.grid(padding=(0, 2), expand=True)
     table.add_column(justify="left")
     table.add_column(justify="left")
     table.add_column(justify="left")
@@ -25,28 +30,33 @@ def create_status_panel(
     # Safe mode indicator
     safe_text = Text()
     if safe_mode:
-        safe_text.append("● ", style="safe")
-        safe_text.append("SAFE MODE", style="safe")
+        safe_text.append("MODE ", style="muted")
+        safe_text.append("SAFE", style="safe")
     else:
-        safe_text.append("● ", style="unsafe")
+        safe_text.append("MODE ", style="muted")
         safe_text.append("UNSAFE", style="unsafe")
 
     # Scope indicator
     scope_text = Text()
     if scope and scope.targets:
-        scope_text.append(f"{len(scope.targets)} targets", style="scope.in")
+        scope_text.append("SCOPE ", style="muted")
+        scope_text.append(f"{len(scope.targets)} target(s)", style="scope.in")
     else:
-        scope_text.append("No scope", style="muted")
+        scope_text.append("SCOPE ", style="muted")
+        scope_text.append("not set", style="warning")
 
     # Session indicator
     session_text = Text()
     if session_id:
+        session_text.append("SESSION ", style="muted")
         session_text.append(session_id[:8], style="highlight")
     else:
-        session_text.append("New session", style="muted")
+        session_text.append("SESSION ", style="muted")
+        session_text.append("new", style="muted")
 
     # Model indicator
     model_text = Text()
+    model_text.append("MODEL ", style="muted")
     model_text.append(f"{provider}/{model}", style="info")
 
     table.add_row(safe_text, scope_text, session_text, model_text)
@@ -57,6 +67,141 @@ def create_status_panel(
         border_style="panel.border",
         padding=(0, 1),
         expand=True,
+    )
+
+
+def create_status_line(
+    *,
+    turn_id: int,
+    safe_mode: bool,
+    pending_actions: int,
+) -> Text:
+    """Create a compact runtime status line for each interaction turn."""
+    mode_style = "safe" if safe_mode else "unsafe"
+    mode_label = "SAFE" if safe_mode else "UNSAFE"
+
+    status = Text()
+    status.append("STATUS ", style="panel.title")
+    status.append("│ ", style="muted")
+    status.append("turn ", style="muted")
+    status.append(str(turn_id), style="highlight")
+    status.append(" │ ", style="muted")
+    status.append("mode ", style="muted")
+    status.append(mode_label, style=mode_style)
+    status.append(" │ ", style="muted")
+    status.append("pending ", style="muted")
+    status.append(str(pending_actions), style="info")
+    return status
+
+
+def create_action_box(action: str, target: str) -> Panel:
+    """Create a compact action box for important runtime steps."""
+    content = Text()
+    content.append(action, style="subtitle")
+    content.append("\n")
+    content.append(target, style="command")
+    return Panel(
+        content,
+        title="[panel.title]Action[/panel.title]",
+        border_style="panel.border",
+        padding=(0, 1),
+    )
+
+
+def create_plan_tracker_panel(
+    steps: list[tuple[int, str, str | None]],
+    description: str | None = None,
+) -> Panel:
+    """Create a deterministic plan-tracker panel for multi-step execution."""
+    tracker = Table(
+        header_style="table.header",
+        border_style="muted",
+        show_lines=True,
+        expand=True,
+    )
+    tracker.add_column("#", justify="center", width=4)
+    tracker.add_column("State", width=10)
+    tracker.add_column("Command", style="command")
+    tracker.add_column("Notes", style="muted")
+
+    for idx, command, desc in steps:
+        tracker.add_row(str(idx), "[status.pending]queued[/status.pending]", command, desc or "")
+
+    return Panel(
+        tracker,
+        title=f"[panel.title]{description or 'Plan Tracker'}[/panel.title]",
+        border_style="panel.border",
+        padding=(0, 1),
+    )
+
+
+def create_suggested_commands_panel(
+    shell_commands: Sequence[Command],
+    non_shell_tools: Sequence[tuple[str, dict[str, Any] | None]],
+) -> Panel:
+    """Create a structured suggested-commands panel."""
+    table = Table(
+        header_style="table.header",
+        border_style="muted",
+        show_lines=False,
+        expand=True,
+    )
+    table.add_column("#", justify="right", width=4)
+    table.add_column("Action", style="command")
+    table.add_column("Details", style="muted")
+
+    row_index = 1
+    for command in shell_commands:
+        table.add_row(str(row_index), command.command, command.description or "shell command")
+        row_index += 1
+
+    for tool_name, arguments in non_shell_tools:
+        detail = str(arguments) if arguments else "tool action"
+        table.add_row(str(row_index), tool_name, detail)
+        row_index += 1
+
+    return Panel(
+        table,
+        title="[panel.title]Suggested Commands[/panel.title]",
+        border_style="panel.border",
+        padding=(0, 1),
+    )
+
+
+def create_diff_box(file_path: str, diff_preview: str, action: str) -> Panel:
+    """Create a diff preview panel for file edits/writes."""
+    preview = diff_preview[:6000]
+    syntax = Syntax(
+        preview,
+        "diff",
+        theme="monokai",
+        line_numbers=False,
+        word_wrap=True,
+    )
+    return Panel(
+        syntax,
+        title=(
+            "[panel.title]Diff Box[/panel.title] "
+            f"[muted]({action}: {Path(file_path).name})[/muted]"
+        ),
+        border_style="warning",
+        padding=(0, 1),
+    )
+
+
+def create_danger_confirmation_box(message: str, command: str | None = None) -> Panel:
+    """Create a high-visibility dangerous confirmation panel."""
+    content = Text()
+    content.append(message, style="danger")
+    if command:
+        content.append("\n\n")
+        content.append("Command: ", style="muted")
+        content.append(command, style="command")
+    return Panel(
+        content,
+        title="[unsafe]Dangerous Confirmation[/unsafe]",
+        border_style="danger",
+        padding=(0, 1),
     )
 
 

@@ -9,13 +9,14 @@ from typing import Any
 from .agent import BaseAgent
 from .context import AgentExecutionRecord
 from .memory import WorkflowMemory
+from .scheduler import ParallelAgentGroup
 
 
 @dataclass(slots=True)
 class AgentPipeline:
     """Ordered sequence of agents executed by the orchestrator."""
 
-    agents: list[BaseAgent]
+    agents: list[BaseAgent | ParallelAgentGroup]
     name: str = "agent-pipeline"
     metadata: dict[str, Any] = field(default_factory=dict)
 

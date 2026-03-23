@@ -35,3 +35,28 @@ def test_status_and_suggested_commands_render() -> None:
     output = console.export_text()
     assert "Status" in output
     assert "Suggested Commands" in output
+
+
+def test_prompt_diagnostics_snapshot_has_canonical_layers() -> None:
+    session, _console = _make_session()
+    compiled = session._build_prompt_diagnostics_snapshot()
+    layer_names = [layer.name for layer in compiled.layers]
+    assert layer_names == [
+        "SystemLayer",
+        "PolicyLayer",
+        "CommandLayer",
+        "SessionMemoryLayer",
+        "PluginLayer",
+        "RuntimeContextLayer",
+    ]
+    assert compiled.token_count_estimate >= 1
+
+
+def test_ui_dino_toggle_persists_preference() -> None:
+    session, _console = _make_session()
+    session._handle_ui_command("dino off")
+    assert session._renderer.is_dino_enabled() is False
+    assert session.config.ui.dino_enabled is False
+    session._handle_ui_command("dino on")
+    assert session._renderer.is_dino_enabled() is True
+    assert session.config.ui.dino_enabled is True

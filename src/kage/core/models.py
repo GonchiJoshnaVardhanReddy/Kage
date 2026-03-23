@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from kage.core.memory.store import get_or_create_memory_store, persist_memory_store
 from kage.core.observability.session_trace import SessionTrace
 from kage.utils import utcnow
 
@@ -144,6 +145,8 @@ class Session(BaseModel):
         from kage.core.observability import register_session_trace
 
         register_session_trace(self.id, self.trace)
+        store = get_or_create_memory_store(self)
+        persist_memory_store(self, store)
 
 
 class AuditEntry(BaseModel):

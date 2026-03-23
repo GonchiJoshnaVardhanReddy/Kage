@@ -7,9 +7,9 @@ from kage.core.models import Command, Session
 from kage.core.prompt import (
     BasePromptLayer,
     CompiledPrompt,
+    MiddlewareRegistry,
     PromptCompiler,
     PromptContext,
-    PromptMiddlewareManager,
     TokenBudget,
 )
 from kage.core.tools import ToolRegistry, register_builtin_tools
@@ -56,7 +56,7 @@ def test_layer_ordering_by_priority() -> None:
 
 
 def test_middleware_injection_and_rewrite() -> None:
-    manager = PromptMiddlewareManager()
+    manager = MiddlewareRegistry()
     manager.register(_InjectLayerMiddleware())
     compiler = PromptCompiler(middleware=manager)
     compiled = compiler.compile(_context())

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from kage.ai.prompts import SYSTEM_PROMPT
+from kage.core.observability import recorder_for_session
 
 from .context import PromptContext
 
@@ -87,7 +88,32 @@ class SessionMemoryLayer(BasePromptLayer):
         super().__init__(name="session_memory", priority=priority, enabled=enabled)
 
     def content(self, context: PromptContext) -> str:
+        from kage.core.memory import MemoryRetriever, get_or_create_memory_store
+
         lines = ["## Session Memory"]
+        store = get_or_create_memory_store(context.session)
+        retriever = MemoryRetriever(store)
+        query_hints = [
+            *(context.transcript_excerpts[-3:] if context.transcript_excerpts else []),
+            *(context.workflow_memory.notes[-2:] if context.workflow_memory.notes else []),
+        ]
+        query = " ".join(query_hints).strip()
+        blocks = retriever.retrieve(query, limit=4) if query else retriever.retrieve_recent(limit=4)
+        if blocks:
+            lines.append("- Compacted memory blocks:")
+            recorder = recorder_for_session(context.session, component="prompt_memory_layer")
+            turn_id = int(context.metadata.get("turn_id", 0))
+            for block in blocks:
+                lines.append(f"  - {block.summary}")
+                if block.entities:
+                    lines.append(f"    entities: {', '.join(block.entities[:6])}")
+                if block.artifacts:
+                    lines.append(f"    artifacts: {', '.join(block.artifacts[:6])}")
+                recorder.record(
+                    event_type="memory_block_used",
+                    turn_id=turn_id,
+                    payload={"block_id": block.block_id, "confidence_score": block.confidence_score},
+                )
         if context.workflow_memory.notes:
             lines.append("- Notes:")
             for note in context.workflow_memory.notes[-8:]:

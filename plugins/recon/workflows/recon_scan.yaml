@@ -1,0 +1,15 @@
+name: recon_scan
+description: Plugin-defined reconnaissance scan workflow
+required_tools:
+  - builtin.session.note
+required_middleware:
+  - recon_context_injector
+default_parameters:
+  planned_command: echo recon-scan
+pipeline:
+  - PlannerAgent
+  - parallel:
+      - ReconAgent
+      - EnumAgent
+  - ReporterAgent
+

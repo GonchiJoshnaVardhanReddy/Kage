@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from enum import Enum
+from time import perf_counter
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
-from rich.table import Table
 from rich.text import Text
 
+from kage.cli.ui.panels import (
+    create_danger_confirmation_box,
+    create_diff_box,
+    create_plan_tracker_panel,
+)
 from kage.core.models import Command
 
 
@@ -29,6 +34,9 @@ class FileCreateApprovalChoice(str, Enum):
     APPROVE_ONCE = "2"
     AUTO_APPROVE_CREATES = "3"
     CANCEL = "4"
+
+
+SPINNER_FRAMES = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
 
 
 def prompt_user_input(console: Console) -> str:
@@ -111,16 +119,18 @@ def prompt_file_approval(
     lines = []
     lines.append(f"[subtitle]Action:[/subtitle] [warning]{action}[/warning]")
     lines.append(f"[subtitle]File:[/subtitle] [command]{file_path}[/command]")
-    if content_preview:
-        preview = content_preview[:1200] + ("..." if len(content_preview) > 1200 else "")
-        lines.append(f"\n[muted]{preview}[/muted]")
 
-    console.print(Panel(
-        "\n".join(lines),
-        title="[warning]📄 File Operation[/warning]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="[warning]File Operation[/warning]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
+
+    if content_preview:
+        console.print(create_diff_box(file_path, content_preview, action))
 
     return Confirm.ask(
         "[warning]Approve?[/warning]",
@@ -185,21 +195,7 @@ def prompt_plan_approval(
     """
     console.print()
 
-    table = Table(
-        title=description or "Execution Plan",
-        title_style="bold cyan",
-        header_style="bold",
-        border_style="cyan",
-        show_lines=True,
-    )
-    table.add_column("#", style="bold", width=4, justify="center")
-    table.add_column("Command", style="command")
-    table.add_column("Description", style="muted")
-
-    for idx, cmd, desc in steps:
-        table.add_row(str(idx), cmd, desc or "")
-
-    console.print(table)
+    console.print(create_plan_tracker_panel(steps, description or "Execution Plan"))
 
     console.print()
     console.print("[bold]Options:[/bold]")
@@ -305,17 +301,13 @@ def prompt_scope_warning(console: Console, target: str, command: str) -> bool:
     """Warn about potential out-of-scope action."""
     console.print()
 
-    warning_panel = Panel(
-        Text.from_markup(
-            f"[warning]Potential out-of-scope target detected![/warning]\n\n"
-            f"Target: [ip]{target}[/ip]\n"
-            f"Command: [command]{command}[/command]\n\n"
-            f"[muted]This target may not be within your defined scope.[/muted]"
-        ),
-        title="[unsafe]⚠ SCOPE WARNING[/unsafe]",
-        border_style="danger",
+    console.print(
+        create_danger_confirmation_box(
+            f"Potential out-of-scope target detected: {target}",
+            command=command,
+        )
     )
-    console.print(warning_panel)
+    console.print("[muted]This target may not be within your defined scope.[/muted]")
 
     return Confirm.ask(
         "[danger]Proceed anyway?[/danger]",
@@ -328,17 +320,13 @@ def prompt_safe_mode_warning(console: Console, command: str, reason: str) -> boo
     """Warn about dangerous command in safe mode."""
     console.print()
 
-    warning_panel = Panel(
-        Text.from_markup(
-            f"[danger]Dangerous command blocked by Safe Mode![/danger]\n\n"
-            f"Command: [command]{command}[/command]\n"
-            f"Reason: [warning]{reason}[/warning]\n\n"
-            f"[muted]Safe Mode prevents potentially destructive operations.[/muted]"
-        ),
-        title="[unsafe]🛡 SAFE MODE[/unsafe]",
-        border_style="danger",
+    console.print(
+        create_danger_confirmation_box(
+            f"Dangerous command blocked by Safe Mode ({reason})",
+            command=command,
+        )
     )
-    console.print(warning_panel)
+    console.print("[muted]Safe Mode prevents potentially destructive operations.[/muted]")
 
     return Confirm.ask(
         "[danger]Override Safe Mode and execute?[/danger]",
@@ -359,7 +347,8 @@ def prompt_first_run(console: Console) -> bool:
 
 def show_thinking(console: Console) -> None:
     """Show thinking indicator."""
-    console.print("[assistant.thinking]Thinking...[/assistant.thinking]", end="\r")
+    frame = SPINNER_FRAMES[int(perf_counter() * 8) % len(SPINNER_FRAMES)]
+    console.print(f"[assistant.thinking]{frame} Thinking...[/assistant.thinking]", end="\r")
 
 
 def clear_thinking(console: Console) -> None:

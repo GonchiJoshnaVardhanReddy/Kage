@@ -17,7 +17,7 @@ from .layers import (
     SessionMemoryLayer,
     SystemLayer,
 )
-from .middleware import PromptMiddlewareManager
+from .middleware_registry import MiddlewareRegistry
 
 
 @dataclass(slots=True)
@@ -25,7 +25,7 @@ class PromptCompiler:
     """Compiles modular prompt layers into provider-ready system prompt."""
 
     budget: TokenBudget = field(default_factory=TokenBudget)
-    middleware: PromptMiddlewareManager = field(default_factory=PromptMiddlewareManager)
+    middleware: MiddlewareRegistry = field(default_factory=MiddlewareRegistry)
     _layers: list[PromptLayer] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -47,7 +47,7 @@ class PromptCompiler:
         """Compile all enabled layers into a provider-ready prompt."""
         recorder = recorder_for_session(context.session, component="prompt_compiler")
         turn_id = int(context.metadata.get("turn_id", 0))
-        injected = self.middleware.apply_before_compile(context)
+        injected = self.middleware.apply_before(context)
         if injected:
             recorder.record(
                 event_type="middleware_modified_prompt",
@@ -95,7 +95,7 @@ class PromptCompiler:
             dropped_layers=dropped_layers,
             token_count_estimate=token_count,
         )
-        final_compiled = self.middleware.apply_after_compile(compiled)
+        final_compiled = self.middleware.apply_after(compiled, context=context)
         recorder.record(
             event_type="prompt_compiled",
             turn_id=turn_id,

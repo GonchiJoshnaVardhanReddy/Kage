@@ -14,6 +14,7 @@ from kage.cli.ui.themes import KAGE_LOGO, KAGE_LOGO_SMALL, KAGE_THEME
 from kage.cli.wizard.setup import _is_embedding_model
 from kage.persistence.config import KageConfig
 from kage.reporting.export import OutputFormat
+from kage.ui.renderer import UIMode
 from kage.version import __version__
 
 # Create main console with theme
@@ -247,7 +248,7 @@ def launch(
 
     from kage.cli.commands.chat import chat_loop
 
-    chat_loop(console, config, session_id=None, scope=None)
+    chat_loop(console, config, session_id=None, scope=None, ui_mode=UIMode.RICH)
 
 
 @app.command()
@@ -281,6 +282,11 @@ def chat(
         "-m",
         help="Model name to use.",
     ),
+    ui: UIMode = typer.Option(
+        UIMode.RICH,
+        "--ui",
+        help="UI mode: plain, rich, debug, json.",
+    ),
 ) -> None:
     """Start an interactive penetration testing session."""
     config = KageConfig.load()
@@ -308,7 +314,7 @@ def chat(
     # Start chat loop (banner is rendered inside chat session)
     from kage.cli.commands.chat import chat_loop
 
-    chat_loop(console, config, session_id, scope)
+    chat_loop(console, config, session_id, scope, ui_mode=ui)
 
 
 @app.command()
@@ -451,7 +457,7 @@ def session(
 
         from kage.cli.commands.chat import chat_loop
 
-        chat_loop(console, config, session_id=session_id, scope=None)
+        chat_loop(console, config, session_id=session_id, scope=None, ui_mode=UIMode.RICH)
 
     elif action == "export":
         if not session_id:

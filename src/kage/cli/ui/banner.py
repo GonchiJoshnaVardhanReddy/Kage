@@ -57,6 +57,7 @@ def show_startup_banner(
     console.print()
     console.print(TAGLINE_FRAMES[-1])  # Final tagline
     console.print()
+    console.print("[panel.title]STATUS[/panel.title] [muted]│[/muted] [info]ready[/info]")
     console.print(
         "    [bright_cyan]I am [bold]Kage[/bold][/bright_cyan]"
         "[cyan] — your AI pentest assistant[/cyan]"

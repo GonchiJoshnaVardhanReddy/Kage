@@ -7,7 +7,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kage.core.prompt import MiddlewareRegistry
 from kage.core.tools import ToolRegistry
+from kage.core.workflows import WorkflowRegistry, register_plugin_workflows
 from kage.plugins.base import BasePlugin, Capability, PluginContext
 from kage.plugins.sandbox import PluginSandbox, SandboxViolation, validate_plugin_code
 from kage.plugins.schema import PluginSchema
@@ -31,15 +33,21 @@ class PluginManager:
         plugin_dirs: list[Path] | None = None,
         sandbox_enabled: bool = True,
         tool_registry: ToolRegistry | None = None,
+        prompt_middleware_registry: MiddlewareRegistry | None = None,
+        workflow_registry: WorkflowRegistry | None = None,
     ) -> None:
         self.plugin_dirs = plugin_dirs or []
         self.sandbox_enabled = sandbox_enabled
         self.tool_registry = tool_registry
+        self.prompt_middleware_registry = prompt_middleware_registry
+        self.workflow_registry = workflow_registry
         self._plugins: dict[str, BasePlugin] = {}
         self._capabilities: dict[
             str, tuple[str, Capability]
         ] = {}  # cap_name -> (plugin_name, capability)
         self._registered_tools: dict[str, list[str]] = {}
+        self._plugin_schemas: dict[str, PluginSchema] = {}
+        self._plugin_dirs_by_name: dict[str, Path] = {}
         self._sandbox = PluginSandbox() if sandbox_enabled else None
 
     def add_plugin_dir(self, path: Path) -> None:
@@ -152,6 +160,8 @@ class PluginManager:
 
         # Register plugin
         self._plugins[plugin.name] = plugin
+        self._plugin_schemas[plugin.name] = schema
+        self._plugin_dirs_by_name[plugin.name] = plugin_dir
 
         # Register capabilities
         for capability in plugin.get_capabilities():
@@ -163,12 +173,30 @@ class PluginManager:
                 self._registered_tools[plugin.name] = [tool.name for tool in tool_schemas]
             else:
                 self._registered_tools[plugin.name] = []
+            if self.prompt_middleware_registry is not None:
+                from kage.core.prompt.plugin_middleware_loader import register_plugin_middlewares
+
+                register_plugin_middlewares(
+                    schema=schema,
+                    registry=self.prompt_middleware_registry,
+                    session=getattr(plugin.context, "session", None) if plugin._context is not None else None,
+                    turn_id=0,
+                )
+            if self.workflow_registry is not None:
+                register_plugin_workflows(
+                    schema=schema,
+                    plugin_dir=plugin_dir,
+                    registry=self.workflow_registry,
+                    session=getattr(plugin.context, "session", None) if plugin._context is not None else None,
+                    turn_id=0,
+                )
         except Exception as e:
             for cap_name, (plugin_name, _) in list(self._capabilities.items()):
                 if plugin_name == plugin.name:
                     del self._capabilities[cap_name]
             self._plugins.pop(plugin.name, None)
             self._registered_tools.pop(plugin.name, None)
+            self._plugin_dirs_by_name.pop(plugin.name, None)
             raise PluginLoadError(f"Plugin tool registration failed: {e}") from e
 
         return plugin
@@ -232,6 +260,40 @@ class PluginManager:
         context = PluginContext(session, log_fn)
         for plugin in self._plugins.values():
             plugin.set_context(context)
+        if self.prompt_middleware_registry is not None:
+            from kage.core.prompt.plugin_middleware_loader import register_plugin_middlewares
+
+            for plugin_name, schema in self._plugin_schemas.items():
+                plugin_instance = self._plugins.get(plugin_name)
+                plugin_session = (
+                    getattr(plugin_instance.context, "session", None)
+                    if plugin_instance is not None and plugin_instance._context is not None
+                    else None
+                )
+                register_plugin_middlewares(
+                    schema=schema,
+                    registry=self.prompt_middleware_registry,
+                    session=plugin_session,
+                    turn_id=0,
+                )
+        if self.workflow_registry is not None:
+            for plugin_name, schema in self._plugin_schemas.items():
+                plugin_instance = self._plugins.get(plugin_name)
+                plugin_session = (
+                    getattr(plugin_instance.context, "session", None)
+                    if plugin_instance is not None and plugin_instance._context is not None
+                    else None
+                )
+                plugin_dir = self._plugin_dirs_by_name.get(plugin_name)
+                if plugin_dir is None:
+                    continue
+                register_plugin_workflows(
+                    schema=schema,
+                    plugin_dir=plugin_dir,
+                    registry=self.workflow_registry,
+                    session=plugin_session,
+                    turn_id=0,
+                )
 
     async def invoke_capability(
         self,
@@ -264,6 +326,8 @@ class PluginManager:
             for tool_name in self._registered_tools.get(name, []):
                 self.tool_registry.unregister(tool_name)
         self._registered_tools.pop(name, None)
+        self._plugin_schemas.pop(name, None)
+        self._plugin_dirs_by_name.pop(name, None)
 
         # Remove plugin
         del self._plugins[name]

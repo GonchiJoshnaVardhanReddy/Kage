@@ -61,6 +61,8 @@ class PluginSchema(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     capabilities: list[CapabilitySchema] = Field(default_factory=list)
     tools: list[PluginToolSchema] = Field(default_factory=list)
+    middleware: list[str] = Field(default_factory=list)
+    workflows: list[str] = Field(default_factory=list)
 
     # Sandbox settings
     allowed_imports: list[str] = Field(default_factory=list)
