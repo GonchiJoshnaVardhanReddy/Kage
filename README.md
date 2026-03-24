@@ -22,11 +22,16 @@ AI-powered penetration testing CLI assistant and modular AI orchestration runtim
 Install and launch:
 
 ```bash
+.\scripts\install.ps1 -Dev
 pip install -e ".[dev]"
 kage launch
 kage chat
 ```
 
+Install and launch:
+```bash
+.\scripts\uninstall.ps1 -Yes
+```
 Provider quick config (`~/.kage/config.yaml`):
 
 ```yaml
