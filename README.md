@@ -28,7 +28,7 @@ kage launch
 kage chat
 ```
 
-Install and launch:
+Unnstall :
 ```bash
 .\scripts\uninstall.ps1 -Yes
 ```
